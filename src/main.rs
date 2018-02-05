@@ -1,6 +1,7 @@
 extern crate byteorder;
+extern crate libflate;
 
-#[macro_use(bson, doc)]
+// #[macro_use(bson, doc)]
 extern crate bson;
 
 use std::io;
@@ -9,7 +10,7 @@ use std::io::BufReader;
 // use std::io::Reader;
 use std::io::Read;
 use std::fs::File;
-use byteorder::{LittleEndian, ReadBytesExt};
+// use byteorder::{LittleEndian, ReadBytesExt};
 
 
 fn decode_file(file_name : &str) -> io::Result<i32>{
@@ -43,18 +44,20 @@ fn decode_file(file_name : &str) -> io::Result<i32>{
 mod ftdc {
     use std::io::BufReader;
     use std::fs::File;
-use std::io::Read;
-use std::io::Cursor;
-use byteorder::{LittleEndian, ReadBytesExt};
-
+    use std::io::Read;
+    use std::io::Cursor;
+    use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+    use bson::Document;
+    use bson::decode_document;
+use libflate::zlib::{Encoder, Decoder};
 
     pub struct BSONBlockReader {
         reader: BufReader<File>,
     }
 
     pub enum RawBSONBlock {
-        Metadata(i32),
-        Metrics(i32),
+        Metadata(Document),
+        Metrics(Document),
     }
 
     impl BSONBlockReader {
@@ -109,17 +112,76 @@ use byteorder::{LittleEndian, ReadBytesExt};
             if result.is_err() {
                 return None;
             }
+
+            v.write_i32::<LittleEndian>(size).unwrap();
+
+
             println!("size3 {}", size);
 
-            // let doc = decode_document(&mut Cursor::new(&self.buffer)).unwrap();
+            let doc = decode_document(&mut Cursor::new(&v)).unwrap();
 
-            // shift buffer down
-            // self.buffer.po
+            let ftdc_type = doc.get_i32("type").unwrap();
 
-            return Some(RawBSONBlock::Metadata(123));
+            if ftdc_type == 0 {
+                return Some(RawBSONBlock::Metadata(doc))
+            } 
+
+                return Some(RawBSONBlock::Metrics(doc))
         }
     }
 
+    pub enum MetricsDocument {
+        Reference(Document),
+        Metrics(Vec<i64>),
+    }
+
+    pub struct MetricsReader<'a> {
+        doc: &'a Document,
+        ref_doc: Box<Document>,
+        data: Vec<i64>,
+    }
+
+    impl<'a> MetricsReader<'a> {
+
+        pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
+            return MetricsReader {
+                 doc,
+                 ref_doc: Box::default(),
+                 data: Vec::new(),
+            }
+        }
+    }
+
+    impl<'a> Iterator for MetricsReader<'a> {
+            type Item = MetricsDocument;
+
+        fn next(&mut self) -> Option<MetricsDocument> {
+            if self.data.is_empty() {
+                let blob = self.doc.get_binary_generic("data").unwrap();
+
+                let mut size_rdr = Cursor::new(&blob);
+                let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
+                println!("Uncompressed size {}", un_size);
+
+                // skip the length in the compressed blob
+                let mut decoder = Decoder::new(&blob[4..]).unwrap();
+                let mut decoded_data = Vec::new();
+                decoder.read_to_end(&mut decoded_data).unwrap();
+
+                let mut cur = Cursor::new(&decoded_data);
+                 self.ref_doc = Box::new(decode_document(&mut cur).unwrap());
+                
+            let metric_count = cur.read_i32::<LittleEndian>().unwrap();
+            println!("metric_count {}", metric_count);
+
+            let sample_count = cur.read_i32::<LittleEndian>().unwrap();
+            println!("sample_count {}", sample_count);
+
+            }
+
+            return None;
+        }
+    }
 }
 
 fn main() {
@@ -133,7 +195,17 @@ fn main() {
     let rdr = ftdc::BSONBlockReader::new(ftdc_metrics);
 
     for item in rdr {
-        println!("found ");
+        match item {
+            ftdc::RawBSONBlock::Metadata(doc) => {
+                println!("Metadata {}", doc);
+            }
+            ftdc::RawBSONBlock::Metrics(doc) => {
+                let rdr =  ftdc::MetricsReader::new(&doc);
+                for item in rdr {
+                    println!("found metric");
+                }
+            }
+        }
     }
 
 }
