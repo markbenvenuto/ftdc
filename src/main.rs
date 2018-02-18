@@ -46,6 +46,7 @@ mod ftdc {
     use std::io::Cursor;
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use bson::Document;
+    use bson::Bson;
     use bson::decode_document;
     use libflate::zlib::{Decoder, Encoder};
 
@@ -146,11 +147,17 @@ mod ftdc {
         }
 
         fn extract_metrics(doc: &Document) -> Vec<i64> {
-            let metrics : Vec<i64> = Vec::new();
+            let mut metrics : Vec<i64> = Vec::new();
 
             for item in doc {
                 let name = item.0;
                 let value = item.1;
+
+                match value {
+                    &Bson::FloatingPoint(f) => { metrics.append(f as i64)
+                    }
+
+                }
             } 
 
             return metrics;
