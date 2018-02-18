@@ -12,15 +12,14 @@ use std::io::Read;
 use std::fs::File;
 // use byteorder::{LittleEndian, ReadBytesExt};
 
-
-fn decode_file(file_name : &str) -> io::Result<i32>{
+fn decode_file(file_name: &str) -> io::Result<i32> {
     let f = File::open(file_name)?;
     let mut reader = BufReader::new(f);
     // let mut buffer = String::new();
 
-    println!("File {}", file_name );
+    println!("File {}", file_name);
 
-    let mut v : Vec<u8> = Vec::with_capacity(4 * 1024);
+    let mut v: Vec<u8> = Vec::with_capacity(4 * 1024);
     v.resize(4 * 1024, 0);
 
     loop {
@@ -34,11 +33,10 @@ fn decode_file(file_name : &str) -> io::Result<i32>{
         if size == 0 {
             break;
         }
-
     }
 
     println!("Done Reading");
-     return Ok(1);
+    return Ok(1);
 }
 
 mod ftdc {
@@ -46,10 +44,10 @@ mod ftdc {
     use std::fs::File;
     use std::io::Read;
     use std::io::Cursor;
-    use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use bson::Document;
     use bson::decode_document;
-use libflate::zlib::{Encoder, Decoder};
+    use libflate::zlib::{Decoder, Encoder};
 
     pub struct BSONBlockReader {
         reader: BufReader<File>,
@@ -61,13 +59,11 @@ use libflate::zlib::{Encoder, Decoder};
     }
 
     impl BSONBlockReader {
-        
-        pub fn new(file_name : &str) -> BSONBlockReader {
-            
+        pub fn new(file_name: &str) -> BSONBlockReader {
             let ff = File::open(file_name).unwrap();
-            
+
             let mut r = BSONBlockReader {
-                reader : BufReader::new(ff),
+                reader: BufReader::new(ff),
             };
 
             return r;
@@ -76,7 +72,7 @@ use libflate::zlib::{Encoder, Decoder};
 
     // #[derive(Serialize, Deserialize, Debug)]
     // pub struct MetadataDoc {
-    //     #[serde(rename = "_id")]  // Use MongoDB's special primary key field name when serializing 
+    //     #[serde(rename = "_id")]  // Use MongoDB's special primary key field name when serializing
     //     pub id: Date,
     //     pub type: i32,
     //     pub age: i32
@@ -87,7 +83,7 @@ use libflate::zlib::{Encoder, Decoder};
         type Item = RawBSONBlock;
 
         fn next(&mut self) -> Option<RawBSONBlock> {
-            let mut size_buf:[u8; 4] = [0, 0, 0, 0];            
+            let mut size_buf: [u8; 4] = [0, 0, 0, 0];
 
             let result = self.reader.read_exact(&mut size_buf);
             if result.is_err() {
@@ -105,16 +101,15 @@ use libflate::zlib::{Encoder, Decoder};
             // println!("size {}", size);
 
             let read_size = size as usize;
-            let mut v : Vec<u8> = Vec::with_capacity(read_size);
+            let mut v: Vec<u8> = Vec::with_capacity(read_size);
             v.resize(read_size, 0);
-            
+
             let result = self.reader.read_exact(&mut v[4..]);
             if result.is_err() {
                 return None;
             }
 
             v.write_i32::<LittleEndian>(size).unwrap();
-
 
             println!("size3 {}", size);
 
@@ -123,10 +118,10 @@ use libflate::zlib::{Encoder, Decoder};
             let ftdc_type = doc.get_i32("type").unwrap();
 
             if ftdc_type == 0 {
-                return Some(RawBSONBlock::Metadata(doc))
-            } 
+                return Some(RawBSONBlock::Metadata(doc));
+            }
 
-                return Some(RawBSONBlock::Metrics(doc))
+            return Some(RawBSONBlock::Metrics(doc));
         }
     }
 
@@ -142,18 +137,28 @@ use libflate::zlib::{Encoder, Decoder};
     }
 
     impl<'a> MetricsReader<'a> {
-
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
             return MetricsReader {
-                 doc,
-                 ref_doc: Box::default(),
-                 data: Vec::new(),
-            }
+                doc,
+                ref_doc: Box::default(),
+                data: Vec::new(),
+            };
+        }
+
+        fn extract_metrics(doc: &Document) -> Vec<i64> {
+            let metrics : Vec<i64> = Vec::new();
+
+            for item in doc {
+                let name = item.0;
+                let value = item.1;
+            } 
+
+            return metrics;
         }
     }
 
     impl<'a> Iterator for MetricsReader<'a> {
-            type Item = MetricsDocument;
+        type Item = MetricsDocument;
 
         fn next(&mut self) -> Option<MetricsDocument> {
             if self.data.is_empty() {
@@ -169,14 +174,17 @@ use libflate::zlib::{Encoder, Decoder};
                 decoder.read_to_end(&mut decoded_data).unwrap();
 
                 let mut cur = Cursor::new(&decoded_data);
-                 self.ref_doc = Box::new(decode_document(&mut cur).unwrap());
-                
-            let metric_count = cur.read_i32::<LittleEndian>().unwrap();
-            println!("metric_count {}", metric_count);
+                self.ref_doc = Box::new(decode_document(&mut cur).unwrap());
 
-            let sample_count = cur.read_i32::<LittleEndian>().unwrap();
-            println!("sample_count {}", sample_count);
+                let metric_count = cur.read_i32::<LittleEndian>().unwrap();
+                println!("metric_count {}", metric_count);
 
+                let sample_count = cur.read_i32::<LittleEndian>().unwrap();
+                println!("sample_count {}", sample_count);
+
+                // Extract metrics from reference document
+
+                // Decode metrics
             }
 
             return None;
@@ -191,7 +199,6 @@ fn main() {
 
     decode_file(ftdc_metrics);
 
-
     let rdr = ftdc::BSONBlockReader::new(ftdc_metrics);
 
     for item in rdr {
@@ -200,12 +207,11 @@ fn main() {
                 println!("Metadata {}", doc);
             }
             ftdc::RawBSONBlock::Metrics(doc) => {
-                let rdr =  ftdc::MetricsReader::new(&doc);
+                let rdr = ftdc::MetricsReader::new(&doc);
                 for item in rdr {
                     println!("found metric");
                 }
             }
         }
     }
-
 }
