@@ -137,6 +137,59 @@ mod ftdc {
         data: Vec<i64>,
     }
 
+
+        fn extract_metrics_int(doc: &Document, metrics: &mut Vec<i64>) {
+            for item in doc {
+                let name = item.0;
+                let value = item.1;
+
+                match value {
+                    &Bson::FloatingPoint(f)  => { 
+                        metrics.push(f as i64);
+                    }
+                    &Bson::I64(f) => { 
+                        metrics.push(f);
+                    }
+                    &Bson::I32(f) => { 
+                        metrics.push(f as i64);
+                    }
+                    &Bson::Boolean(f) => { 
+                        metrics.push(f as i64);
+                    }
+                    &Bson::UtcDatetime(f) => { 
+                        metrics.push(f.timestamp() as i64);
+                    }
+                    &Bson::TimeStamp(f) => { 
+                        metrics.push(f >> 32 as i64);
+                        metrics.push(f & 0xffff as i64);
+                    }
+                    &Bson::Document(ref o) => { 
+                        extract_metrics_int(o, metrics);
+                    }
+                    &Bson::Array(ref a) => {
+                        for &ref b in a {
+                            extract_metrics_int(b, metrics);
+                        }
+                    }
+
+                    &Bson::JavaScriptCode(_) =>{}
+                    &Bson::JavaScriptCodeWithScope(_, _) =>{}
+                    &Bson::Binary(_,_) =>{}
+                    &Bson::ObjectId(_) =>{}
+
+                    &Bson::String(_) | &Bson::Null | &Bson::Symbol(_)
+                        | &Bson::RegExp(_, _) 
+                        => {}
+                }
+            } 
+        }
+
+        fn extract_metrics(doc: &Document) -> Vec<i64> {
+            let mut metrics : Vec<i64> = Vec::new();
+            extract_metrics_int(doc, &mut metrics);
+            return metrics;
+        }
+
     impl<'a> MetricsReader<'a> {
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
             return MetricsReader {
@@ -146,22 +199,7 @@ mod ftdc {
             };
         }
 
-        fn extract_metrics(doc: &Document) -> Vec<i64> {
-            let mut metrics : Vec<i64> = Vec::new();
 
-            for item in doc {
-                let name = item.0;
-                let value = item.1;
-
-                match value {
-                    &Bson::FloatingPoint(f) => { metrics.append(f as i64)
-                    }
-
-                }
-            } 
-
-            return metrics;
-        }
     }
 
     impl<'a> Iterator for MetricsReader<'a> {
