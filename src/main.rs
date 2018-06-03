@@ -8,8 +8,8 @@ use std::io;
 // use std::io::prelude::*;
 use std::io::BufReader;
 // use std::io::Reader;
-use std::io::Read;
 use std::fs::File;
+use std::io::Read;
 // use byteorder::{LittleEndian, ReadBytesExt};
 
 fn decode_file(file_name: &str) -> io::Result<i32> {
@@ -40,15 +40,16 @@ fn decode_file(file_name: &str) -> io::Result<i32> {
 }
 
 mod ftdc {
-    use std::io::BufReader;
-    use std::fs::File;
-    use std::io::Read;
-    use std::io::Cursor;
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-    use bson::Document;
-    use bson::Bson;
     use bson::decode_document;
+    use bson::Bson;
+    use bson::Document;
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use libflate::zlib::{Decoder, Encoder};
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::io::Cursor;
+    use std::io::Read;
+    use std::str::*;
 
     pub struct BSONBlockReader {
         reader: BufReader<File>,
@@ -137,58 +138,125 @@ mod ftdc {
         data: Vec<i64>,
     }
 
-
-        fn extract_metrics_int(doc: &Document, metrics: &mut Vec<i64>) {
-            for item in doc {
-                let name = item.0;
-                let value = item.1;
-
-                match value {
-                    &Bson::FloatingPoint(f)  => { 
-                        metrics.push(f as i64);
-                    }
-                    &Bson::I64(f) => { 
-                        metrics.push(f);
-                    }
-                    &Bson::I32(f) => { 
-                        metrics.push(f as i64);
-                    }
-                    &Bson::Boolean(f) => { 
-                        metrics.push(f as i64);
-                    }
-                    &Bson::UtcDatetime(f) => { 
-                        metrics.push(f.timestamp() as i64);
-                    }
-                    &Bson::TimeStamp(f) => { 
-                        metrics.push(f >> 32 as i64);
-                        metrics.push(f & 0xffff as i64);
-                    }
-                    &Bson::Document(ref o) => { 
-                        extract_metrics_int(o, metrics);
-                    }
-                    &Bson::Array(ref a) => {
-                        for &ref b in a {
-                            extract_metrics_int(b, metrics);
-                        }
-                    }
-
-                    &Bson::JavaScriptCode(_) =>{}
-                    &Bson::JavaScriptCodeWithScope(_, _) =>{}
-                    &Bson::Binary(_,_) =>{}
-                    &Bson::ObjectId(_) =>{}
-
-                    &Bson::String(_) | &Bson::Null | &Bson::Symbol(_)
-                        | &Bson::RegExp(_, _) 
-                        => {}
+    fn extract_metrics_bson_int(value: &Bson, metrics: &mut Vec<i64>) {
+            match value {
+                &Bson::FloatingPoint(f) => {
+                    metrics.push(f as i64);
                 }
-            } 
-        }
+                &Bson::I64(f) => {
+                    metrics.push(f);
+                }
+                &Bson::I32(f) => {
+                    metrics.push(f as i64);
+                }
+                &Bson::Boolean(f) => {
+                    metrics.push(f as i64);
+                }
+                &Bson::UtcDatetime(f) => {
+                    metrics.push(f.timestamp() as i64);
+                }
+                &Bson::TimeStamp(f) => {
+                    metrics.push(f >> 32 as i64);
+                    metrics.push(f & 0xffff as i64);
+                }
+                &Bson::Document(ref o) => {
+                    extract_metrics_int(o, metrics);
+                }
+                &Bson::Array(ref a) => {
+                    for &ref b in a {
+                        extract_metrics_bson_int(b, metrics);
+                    }
+                }
 
-        fn extract_metrics(doc: &Document) -> Vec<i64> {
-            let mut metrics : Vec<i64> = Vec::new();
-            extract_metrics_int(doc, &mut metrics);
-            return metrics;
+                &Bson::JavaScriptCode(_) => {}
+                &Bson::JavaScriptCodeWithScope(_, _) => {}
+                &Bson::Binary(_, _) => {}
+                &Bson::ObjectId(_) => {}
+
+                &Bson::String(_) | &Bson::Null | &Bson::Symbol(_) | &Bson::RegExp(_, _) => {}
+            }
+
+    }
+
+    fn extract_metrics_int(doc: &Document, metrics: &mut Vec<i64>) {
+        for item in doc {
+            let name = item.0;
+            let value = item.1;
+
+            extract_metrics_bson_int(value, metrics);
         }
+    }
+
+    pub fn extract_metrics(doc: &Document) -> Vec<i64> {
+        let mut metrics: Vec<i64> = Vec::new();
+        extract_metrics_int(doc, &mut metrics);
+        return metrics;
+    }
+
+
+    fn concat2(a1: &str, a2: &str) -> String {
+        let mut s = a1.to_string();
+        s.push_str(a2);
+        return s;
+    }
+
+    fn concat3(a1: &str, a2: &str, a3: &str) -> String {
+        let mut s = a1.to_string();
+        s.push_str(a2);
+        s.push('.');
+        s.push_str(a3);
+        return s;
+    }
+
+    fn extract_metrics_paths_bson_int(value: &(&String, &Bson), prefix: &str, metrics: &mut Vec<String>) {
+            let prefix_dot_str = prefix.to_string() + ".";
+            let prefix_dot = prefix_dot_str.as_str();
+            let ref name = value.0;
+            match value.1 {
+                &Bson::FloatingPoint(_) |
+                &Bson::I64(_) |
+                &Bson::I32(_) |
+                &Bson::Boolean(_) |
+                &Bson::UtcDatetime(_) => {
+                    let a1 = concat2(prefix_dot, name.as_str());
+                    metrics.push(a1);
+                }
+                &Bson::TimeStamp(f) => {
+                    metrics.push(concat3(prefix_dot, name.as_str(),"t"));
+                    metrics.push(concat3(prefix_dot, name.as_str(),"i"));
+                }
+                &Bson::Document(ref o) => {
+                    extract_metrics_paths_int(o, concat2(prefix_dot, name.as_str()).as_str(), metrics);
+                }
+                &Bson::Array(ref a) => {
+                    for &ref b in a {
+                        extract_metrics_paths_bson_int(&(&name, b), concat2(prefix_dot, name.as_str()).as_str(), metrics);
+                    }
+                }
+
+                &Bson::JavaScriptCode(_) => {}
+                &Bson::JavaScriptCodeWithScope(_, _) => {}
+                &Bson::Binary(_, _) => {}
+                &Bson::ObjectId(_) => {}
+
+                &Bson::String(_) | &Bson::Null | &Bson::Symbol(_) | &Bson::RegExp(_, _) => {}
+            }
+
+    }
+
+    fn extract_metrics_paths_int(doc: &Document, prefix: &str, metrics: &mut Vec<String>) {
+        for item in doc {
+            extract_metrics_paths_bson_int(&item, prefix, metrics);
+        }
+    }
+
+    pub fn extract_metrics_paths(doc: &Document) -> Vec<String> {
+        let mut metrics: Vec<String> = Vec::new();
+        let s = String::new();
+        extract_metrics_paths_int(doc, "", &mut metrics);
+        return metrics;
+    }
+
 
     impl<'a> MetricsReader<'a> {
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
@@ -198,8 +266,6 @@ mod ftdc {
                 data: Vec::new(),
             };
         }
-
-
     }
 
     impl<'a> Iterator for MetricsReader<'a> {
@@ -228,7 +294,7 @@ mod ftdc {
                 println!("sample_count {}", sample_count);
 
                 // Extract metrics from reference document
-
+                let ref_metrics = extract_metrics(&self.ref_doc);
                 // Decode metrics
             }
 
