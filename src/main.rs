@@ -64,7 +64,7 @@ mod ftdc {
     use std::str::*;
     use varinteger::decode;
 use std::borrow::Borrow;
-    
+
     pub struct BSONBlockReader {
         reader: BufReader<File>,
     }
@@ -367,7 +367,7 @@ use std::borrow::Borrow;
     }
 
     pub enum MetricsDocument {
-        Reference(Document),
+        Reference(&Document),
         Metrics(Vec<i64>),
     }
 
