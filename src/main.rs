@@ -7,6 +7,7 @@ extern crate varinteger;
 
 #[macro_use]
 extern crate structopt;
+extern crate chrono;
 extern crate indicatif;
 
 use std::path::PathBuf;
@@ -53,6 +54,7 @@ mod ftdc {
     use bson::Bson;
     use bson::Document;
     use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+    use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use libflate::zlib::{Decoder, Encoder};
     use std::fs::File;
     use std::io::BufRead;
@@ -61,7 +63,8 @@ mod ftdc {
     use std::io::Read;
     use std::str::*;
     use varinteger::decode;
-
+use std::borrow::Borrow;
+    
     pub struct BSONBlockReader {
         reader: BufReader<File>,
     }
@@ -138,23 +141,7 @@ mod ftdc {
         }
     }
 
-    pub enum MetricsDocument {
-        Reference(Document),
-        Metrics(Vec<i64>),
-    }
 
-    enum MetricState {
-        Reference,
-        Metrics
-    }
-
-    pub struct MetricsReader<'a> {
-        doc: &'a Document,
-        ref_doc: Box<Document>,
-        data: Vec<i64>,
-        it_state: MetricState,
-        sample: u64,
-    }
 
     fn extract_metrics_bson_int(value: &Bson, metrics: &mut Vec<i64>) {
         match value {
@@ -280,6 +267,125 @@ mod ftdc {
         return metrics;
     }
 
+    fn fill_document_bson_int(
+        ref_field: (&String, &Bson),
+        it: &mut Iterator<Item = &i64>,
+        doc: &mut Document,
+    ) {
+        match ref_field.1 {
+            &Bson::FloatingPoint(f) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::FloatingPoint(*it.next().unwrap() as f64),
+                );
+            }
+            &Bson::I64(f) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::I64(*it.next().unwrap()));
+            }
+            &Bson::I32(f) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::I32(*it.next().unwrap() as i32),
+                );
+            }
+            &Bson::Boolean(f) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::Boolean(*it.next().unwrap() != 0),
+                );
+            }
+            &Bson::UtcDatetime(f) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::UtcDatetime(DateTime::<Utc>::from_utc(
+                        NaiveDateTime::from_timestamp(*it.next().unwrap(), 0),
+                        Utc,
+                    )),
+                );
+            }
+            &Bson::TimeStamp(f) => {
+                let p1 = it.next().unwrap();
+                let p2 = it.next().unwrap();
+
+                doc.insert_bson(ref_field.0.to_string(), Bson::TimeStamp(p1 << 32 & p2));
+            }
+            &Bson::Document(ref o) => {
+                let mut doc_nested = Document::new();
+                for ref_field2 in o {
+                    fill_document_bson_int(ref_field2, it, &mut doc_nested);
+                }
+            }
+            &Bson::Array(ref a) => {
+                // for &ref b in a {
+                //     fill_document_bson_int(value, it, doc);
+                // }
+            }
+
+            &Bson::JavaScriptCode(ref a) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::JavaScriptCode(a.to_string()));
+            }
+            &Bson::JavaScriptCodeWithScope(ref a, ref b) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::JavaScriptCodeWithScope(a.to_string(), b.clone()),
+                );
+            }
+            &Bson::Binary(ref a, ref b) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::Binary(*a, b.to_vec()));
+            }
+            &Bson::ObjectId(ref a) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::ObjectId(a.clone()));
+            }
+            &Bson::String(ref a) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::String(a.to_string()));
+            }
+            &Bson::Null => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::Null);
+            }
+            &Bson::Symbol(ref a) => {
+                doc.insert_bson(ref_field.0.to_string(), Bson::Symbol(a.to_string()));
+            }
+            &Bson::RegExp(ref a, ref b) => {
+                doc.insert_bson(
+                    ref_field.0.to_string(),
+                    Bson::RegExp(a.to_string(), b.to_string()),
+                );
+            }
+        }
+    }
+
+    pub fn fill_document(ref_doc: &Document, metrics: &[i64]) -> Document {
+        let mut doc = Document::new();
+
+        let mut cur = metrics.iter();
+
+        for item in ref_doc {
+            fill_document_bson_int(item, &mut cur, &mut doc);
+        }
+
+        return doc;
+    }
+
+    pub enum MetricsDocument {
+        Reference(Document),
+        Metrics(Vec<i64>),
+    }
+
+    enum MetricState {
+        Reference,
+        Metrics,
+    }
+
+    pub struct MetricsReader<'a> {
+        doc: &'a Document,
+        ref_doc: Box<Document>,
+        data: Vec<i64>,
+        it_state: MetricState,
+        sample: i32,
+        sample_count: i32,
+        raw_metrics: Vec<u64>,
+    }
+
     impl<'a> MetricsReader<'a> {
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
             return MetricsReader {
@@ -288,14 +394,16 @@ mod ftdc {
                 data: Vec::new(),
                 it_state: MetricState::Reference,
                 sample: 0,
+                sample_count: 0,
+                raw_metrics: Vec::new()
             };
         }
     }
 
     impl<'a> Iterator for MetricsReader<'a> {
-        type Item = MetricsDocument;
+        type Item = &'a MetricsDocument;
 
-        fn next(&mut self) -> Option<MetricsDocument> {
+        fn next(&mut self) -> Option<&'a MetricsDocument> {
             if self.data.is_empty() {
                 let blob = self.doc.get_binary_generic("data").unwrap();
 
@@ -314,34 +422,39 @@ mod ftdc {
                 let metric_count = cur.read_i32::<LittleEndian>().unwrap();
                 println!("metric_count {}", metric_count);
 
-                let sample_count = cur.read_i32::<LittleEndian>().unwrap();
-                println!("sample_count {}", sample_count);
+                self.sample_count = cur.read_i32::<LittleEndian>().unwrap();
+                println!("sample_count {}", self.sample_count);
 
                 // Extract metrics from reference document
-                let ref_metrics = extract_metrics(&self.ref_doc);
+                //                let ref_metrics = extract_metrics(&self.ref_doc);
 
                 // Decode metrics
-                let mut raw_metrics: Vec<u64> = Vec::new();
-                raw_metrics.reserve((metric_count * sample_count) as usize);
+                self.raw_metrics.reserve((metric_count * self.sample_count) as usize);
 
                 let mut val: u64 = 0;
-                for _ in 0..sample_count {
+                for _ in 0..self.sample_count {
                     for _ in 0..metric_count {
                         let read_size = decode(cur.get_ref(), &mut val);
                         cur.consume(read_size);
-                        raw_metrics.push(val);
+                        self.raw_metrics.push(val);
                     }
                 }
             }
 
-            // if self.it_state == MetricState::Reference {
-            //     self.it_state = MetricState::Metrics;
-            //     return MetricsDocument::Metrics();
-            // } else {
-            //     self.sample+=1;
-            //     return 
-            // }
-            return None;
+            match self.it_state {
+                MetricState::Reference => {
+                    self.it_state = MetricState::Metrics;
+                    return Some(&MetricsDocument::Reference(self.ref_doc.borrow()));
+                }
+                MetricState::Metrics => {
+                    if (self.sample == self.sample_count) {
+                        return None;
+                    }
+                    self.sample += 1;
+
+                    return Some(fill_document(self.ref_doc, self.raw_metrics))
+                }
+            }
         }
     }
 }
