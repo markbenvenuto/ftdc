@@ -366,9 +366,15 @@ use std::borrow::Borrow;
         return doc;
     }
 
-    pub enum MetricsDocument {
-        Reference(&Document),
-        Metrics(Vec<i64>),
+
+    // pub enum MetricsDocument<'a> {
+    //     Reference(&'a Document),
+    //     Metrics(Vec<i64>),
+    // }
+
+    pub enum MetricsDocument<'a> {
+        Reference(&'a Document),
+        Metrics(&'a [i64]),
     }
 
     enum MetricState {
@@ -384,6 +390,7 @@ use std::borrow::Borrow;
         sample: i32,
         sample_count: i32,
         raw_metrics: Vec<u64>,
+        metrics_count: i32,
     }
 
     impl<'a> MetricsReader<'a> {
@@ -391,7 +398,6 @@ use std::borrow::Borrow;
             return MetricsReader {
                 doc,
                 ref_doc: Box::default(),
-                data: Vec::new(),
                 it_state: MetricState::Reference,
                 sample: 0,
                 sample_count: 0,
@@ -401,10 +407,10 @@ use std::borrow::Borrow;
     }
 
     impl<'a> Iterator for MetricsReader<'a> {
-        type Item = &'a MetricsDocument;
+        type Item = &'a MetricsDocument<'a>;
 
         fn next(&mut self) -> Option<&'a MetricsDocument> {
-            if self.data.is_empty() {
+            if self.raw_metrics.is_empty() {
                 let blob = self.doc.get_binary_generic("data").unwrap();
 
                 let mut size_rdr = Cursor::new(&blob);
@@ -431,6 +437,7 @@ use std::borrow::Borrow;
                 // Decode metrics
                 self.raw_metrics.reserve((metric_count * self.sample_count) as usize);
 
+                // TODO: Don't decode all metrics initially
                 let mut val: u64 = 0;
                 for _ in 0..self.sample_count {
                     for _ in 0..metric_count {
@@ -447,12 +454,12 @@ use std::borrow::Borrow;
                     return Some(&MetricsDocument::Reference(self.ref_doc.borrow()));
                 }
                 MetricState::Metrics => {
-                    if (self.sample == self.sample_count) {
+                    if self.sample == self.sample_count {
                         return None;
                     }
                     self.sample += 1;
 
-                    return Some(fill_document(self.ref_doc, self.raw_metrics))
+                    return Some(&MetricsDocument::Metrics(self.raw_metrics[((self.sample - 1) * self.metrics_count)..(self.sample * self.metrics_count)]))
                 }
             }
         }
