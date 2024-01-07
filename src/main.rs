@@ -391,22 +391,73 @@ use std::borrow::Borrow;
         sample_count: i32,
         raw_metrics: Vec<u64>,
         metrics_count: i32,
+
+        decoded_data: Vec<u8>,
+
+        cursor : Option<Cursor<&'a Vec<u8>>>
     }
 
     impl<'a> MetricsReader<'a> {
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
-            return MetricsReader {
+            let mut q = MetricsReader {
                 doc,
                 ref_doc: Box::default(),
                 it_state: MetricState::Reference,
                 sample: 0,
                 sample_count: 0,
                 metrics_count: 0,
-                raw_metrics: Vec::new()
+                decoded_data: Vec::new(),
+                raw_metrics: Vec::new(),
+                cursor: None,
             };
+
+                q.decode();
+            
+
+            return q;
         }
+
+        fn decode(&self) {
+
+                let blob = self.doc.get_binary_generic("data").unwrap();
+
+                let mut size_rdr = Cursor::new(&blob);
+                let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
+                println!("Uncompressed size {}", un_size);
+
+                // skip the length in the compressed blob
+                let mut decoder = Decoder::new(&blob[4..]).unwrap();
+                decoder.read_to_end(&mut self.decoded_data).unwrap();
+
+                self.cursor = Some(Cursor::new(&self.decoded_data));
+                self.ref_doc = Box::new(decode_document(&mut self.cursor.as_mut().unwrap()).unwrap());
+
+                let metric_count = self.cursor.as_mut().unwrap().read_i32::<LittleEndian>().unwrap();
+                println!("metric_count {}", metric_count);
+
+                self.sample_count = self.cursor.as_mut().unwrap().read_i32::<LittleEndian>().unwrap();
+                println!("sample_count {}", self.sample_count);
+
+                // Extract metrics from reference document
+                //                let ref_metrics = extract_metrics(&q.ref_doc);
+
+                // Decode metrics
+                self.raw_metrics.reserve((metric_count * self.sample_count) as usize);
+
+                // TODO: Don't decode all metrics initially
+                // let mut val: u64 = 0;
+                // for _ in 0..q.sample_count {
+                //     for _ in 0..metric_count {
+                //         let read_size = decode(q.cursor.get_ref(), &mut val);
+                //         q.cursor.consume(read_size);
+                //         q.raw_metrics.push(val);
+                //     }
+                // }
+        }
+
     }
 
+/*
     impl<'a> Iterator for MetricsReader<'a> {
         type Item = &'a MetricsDocument<'a>;
 
@@ -466,6 +517,7 @@ use std::borrow::Borrow;
             }
         }
     }
+*/
 }
 
 /**
@@ -508,6 +560,7 @@ fn main() {
 
     let rdr = ftdc::BSONBlockReader::new(ftdc_metrics);
 
+/*
     for item in rdr {
         match item {
             ftdc::RawBSONBlock::Metadata(doc) => {
@@ -521,6 +574,7 @@ fn main() {
             }
         }
     }
+    */
 
     /*
     let bar = ProgressBar::new(1000);
