@@ -19,8 +19,10 @@ use std::io::BufReader;
 // use std::io::Reader;
 use std::fs::File;
 use std::io::Read;
+
+use crate::ftdc::MetricsDocument;
 // use byteorder::{LittleEndian, ReadBytesExt};
-use indicatif::ProgressBar;
+// use indicatif::ProgressBar;
 
 fn decode_file(file_name: &str) -> io::Result<i32> {
     let f = File::open(file_name)?;
@@ -29,8 +31,7 @@ fn decode_file(file_name: &str) -> io::Result<i32> {
 
     println!("File {}", file_name);
 
-    let mut v: Vec<u8> = Vec::with_capacity(4 * 1024);
-    v.resize(4 * 1024, 0);
+    let mut v: Vec<u8> = vec!(0; 4 * 1024);
 
     loop {
         // read a line into buffer
@@ -46,7 +47,7 @@ fn decode_file(file_name: &str) -> io::Result<i32> {
     }
 
     println!("Done Reading");
-    return Ok(1);
+    Ok(1)
 }
 
 mod ftdc {
@@ -59,6 +60,7 @@ mod ftdc {
     use std::io::BufReader;
     use std::io::Cursor;
     use std::io::Read;
+    use std::rc::Rc;
 
     pub struct BSONBlockReader {
         reader: BufReader<File>,
@@ -73,11 +75,9 @@ mod ftdc {
         pub fn new(file_name: &str) -> BSONBlockReader {
             let ff = File::open(file_name).unwrap();
 
-            let mut r = BSONBlockReader {
+            BSONBlockReader {
                 reader: BufReader::new(ff),
-            };
-
-            return r;
+            }
         }
     }
 
@@ -132,7 +132,7 @@ mod ftdc {
                 return Some(RawBSONBlock::Metadata(doc));
             }
 
-            return Some(RawBSONBlock::Metrics(doc));
+            Some(RawBSONBlock::Metrics(doc))
         }
     }
 
@@ -160,11 +160,11 @@ mod ftdc {
                 metrics.push(f.time as i64);
                 metrics.push(f.increment as i64);
             }
-            &Bson::Document(ref o) => {
+            Bson::Document(o) => {
                 extract_metrics_int(o, metrics);
             }
-            &Bson::Array(ref a) => {
-                for &ref b in a {
+            Bson::Array(a) => {
+                for b in a {
                     extract_metrics_bson_int(b, metrics);
                 }
             }
@@ -190,13 +190,13 @@ mod ftdc {
     pub fn extract_metrics(doc: &Document) -> Vec<i64> {
         let mut metrics: Vec<i64> = Vec::new();
         extract_metrics_int(doc, &mut metrics);
-        return metrics;
+        metrics
     }
 
     fn concat2(a1: &str, a2: &str) -> String {
         let mut s = a1.to_string();
         s.push_str(a2);
-        return s;
+        s
     }
 
     fn concat3(a1: &str, a2: &str, a3: &str) -> String {
@@ -204,7 +204,7 @@ mod ftdc {
         s.push_str(a2);
         s.push('.');
         s.push_str(a3);
-        return s;
+        s
     }
 
     fn extract_metrics_paths_bson_int(
@@ -214,7 +214,7 @@ mod ftdc {
     ) {
         let prefix_dot_str = prefix.to_string() + ".";
         let prefix_dot = prefix_dot_str.as_str();
-        let ref name = value.0;
+        let name = &value.0;
         match value.1 {
             &Bson::Double(_)
             | &Bson::Int64(_)
@@ -231,11 +231,11 @@ mod ftdc {
                 metrics.push(concat3(prefix_dot, name.as_str(), "t"));
                 metrics.push(concat3(prefix_dot, name.as_str(), "i"));
             }
-            &Bson::Document(ref o) => {
+            Bson::Document(o) => {
                 extract_metrics_paths_int(o, concat2(prefix_dot, name.as_str()).as_str(), metrics);
             }
-            &Bson::Array(ref a) => {
-                for &ref b in a {
+            Bson::Array(a) => {
+                for b in a {
                     extract_metrics_paths_bson_int(
                         &(&name, b),
                         concat2(prefix_dot, name.as_str()).as_str(),
@@ -264,12 +264,12 @@ mod ftdc {
     pub fn extract_metrics_paths(doc: &Document) -> Vec<String> {
         let mut metrics: Vec<String> = Vec::new();
         extract_metrics_paths_int(doc, "", &mut metrics);
-        return metrics;
+        metrics
     }
 
     fn fill_document_bson_int(
         ref_field: (&String, &Bson),
-        it: &mut dyn Iterator<Item = &i64>,
+        it: &mut dyn Iterator<Item = &u64>,
         doc: &mut Document,
     ) {
         match ref_field.1 {
@@ -280,7 +280,7 @@ mod ftdc {
                 );
             }
             &Bson::Int64(_) => {
-                doc.insert(ref_field.0.to_string(), Bson::Int64(*it.next().unwrap()));
+                doc.insert(ref_field.0.to_string(), Bson::Int64(*it.next().unwrap() as i64 ));
             }
             &Bson::Int32(_) => {
                 doc.insert(
@@ -299,7 +299,7 @@ mod ftdc {
 
                 doc.insert(
                     ref_field.0.to_string(),
-                    Bson::DateTime(bson::DateTime::from_millis(*p1)),
+                    Bson::DateTime(bson::DateTime::from_millis(*p1 as i64)),
                 );
             }
             Bson::Timestamp(_) => {
@@ -317,47 +317,58 @@ mod ftdc {
             &Bson::Decimal128(_) => {
                 panic!("Decimal128 not implemented")
             }
-            &Bson::Document(ref o) => {
+            Bson::Document(o) => {
                 let mut doc_nested = Document::new();
                 for ref_field2 in o {
                     fill_document_bson_int(ref_field2, it, &mut doc_nested);
                 }
+                doc.insert(ref_field.0.to_string(), doc_nested);
             }
-            &Bson::Array(ref a) => {
-                // TODO
+            Bson::Array( a) => {
+                panic!("Not yet implemented, need metric to Bson instead of metric to (field, Bson")
+                // let arr : Vec<Bson> = Vec::new();
+
+                // let c = "ignore".to_string();
+
                 // for &ref b in a {
-                //     fill_document_bson_int(value, it, doc);
+                //     let mut doc_nested = Document::new();
+                //     let tuple = (&c, b);
+                //     fill_document_bson_int(tuple, it, &mut doc_nested);
+                //     arr.push(doc_nested);
                 // }
+                
+                // doc.insert(ref_field.0.to_string(), arr);
+
             }
 
-            &Bson::JavaScriptCode(ref a) => {
+            Bson::JavaScriptCode(a) => {
                 doc.insert(ref_field.0.to_string(), Bson::JavaScriptCode(a.to_string()));
             }
-            &Bson::JavaScriptCodeWithScope(ref a) => {
+            Bson::JavaScriptCodeWithScope(a) => {
                 doc.insert(
                     ref_field.0.to_string(),
                     Bson::JavaScriptCodeWithScope(a.clone()),
                 );
             }
-            &Bson::Binary(ref a) => {
+            Bson::Binary( a) => {
                 doc.insert(ref_field.0.to_string(), Bson::Binary(a.clone()));
             }
-            &Bson::ObjectId(ref a) => {
-                doc.insert(ref_field.0.to_string(), Bson::ObjectId(a.clone()));
+            Bson::ObjectId( a) => {
+                doc.insert(ref_field.0.to_string(), Bson::ObjectId(*a));
             }
-            &Bson::String(ref a) => {
+            Bson::String(a) => {
                 doc.insert(ref_field.0.to_string(), Bson::String(a.to_string()));
             }
             &Bson::Null => {
                 doc.insert(ref_field.0.to_string(), Bson::Null);
             }
-            &Bson::Symbol(ref a) => {
+            Bson::Symbol(a) => {
                 doc.insert(ref_field.0.to_string(), Bson::Symbol(a.to_string()));
             }
-            &Bson::RegularExpression(ref a) => {
+            Bson::RegularExpression(a) => {
                 doc.insert(ref_field.0.to_string(), Bson::RegularExpression(a.clone()));
             }
-            &Bson::DbPointer(ref a) => {
+            Bson::DbPointer(a) => {
                 doc.insert(ref_field.0.to_string(), Bson::DbPointer(a.clone()));
             }
             &Bson::MaxKey => {
@@ -372,7 +383,7 @@ mod ftdc {
         }
     }
 
-    pub fn fill_document(ref_doc: &Document, metrics: &[i64]) -> Document {
+    pub fn fill_document(ref_doc: &Document, metrics: &[u64]) -> Document {
         let mut doc = Document::new();
 
         let mut cur = metrics.iter();
@@ -381,7 +392,7 @@ mod ftdc {
             fill_document_bson_int(item, &mut cur, &mut doc);
         }
 
-        return doc;
+        doc
     }
 
     // pub enum MetricsDocument<'a> {
@@ -389,9 +400,16 @@ mod ftdc {
     //     Metrics(Vec<i64>),
     // }
 
-    pub enum MetricsDocument<'a> {
-        Reference(&'a Box<Document>),
-        Metrics(&'a [i64]),
+    // pub enum MetricsDocument<'a> {
+    //     Reference(&'a Box<Document>),
+    //     Metrics(Document),
+    //     // Metrics(&'a [i64]),
+    // }
+
+    #[derive(Debug)]
+    pub enum MetricsDocument {
+        Reference(Rc<Document>),
+        Metrics(Document),
     }
 
     enum MetricState {
@@ -401,7 +419,7 @@ mod ftdc {
 
     pub struct MetricsReader<'a> {
         doc: &'a Document,
-        ref_doc: Box<Document>,
+        ref_doc: Rc<Document>,
         //data: Vec<i64>,
         it_state: MetricState,
         sample: i32,
@@ -418,7 +436,7 @@ mod ftdc {
         pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
             MetricsReader {
                 doc,
-                ref_doc: Box::default(),
+                ref_doc: Rc::new(Document::new()),
                 it_state: MetricState::Reference,
                 sample: 0,
                 sample_count: 0,
@@ -429,7 +447,7 @@ mod ftdc {
             }
         }
 
-        pub fn decode(&'a mut self) {
+        /*pub fn decode(&'a mut self) {
             let blob = self.doc.get_binary_generic("data").unwrap();
 
             let mut size_rdr = Cursor::new(&blob);
@@ -441,7 +459,7 @@ mod ftdc {
             decoder.read_to_end(&mut self.decoded_data).unwrap();
 
             self.cursor = Some(Cursor::new(&self.decoded_data));
-            self.ref_doc = Box::new(bson::from_reader(&mut self.cursor.as_mut().unwrap()).unwrap());
+            self.ref_doc = Rc::new(bson::from_reader(&mut self.cursor.as_mut().unwrap()).unwrap());
 
             let metric_count = self
                 .cursor
@@ -460,7 +478,7 @@ mod ftdc {
             println!("sample_count {}", self.sample_count);
 
             // Extract metrics from reference document
-            // let ref_metrics = extract_metrics(&q.ref_doc);
+            // let ref_metrics = extract_metrics(&self.ref_doc);
 
             // Decode metrics
             self.raw_metrics
@@ -475,70 +493,99 @@ mod ftdc {
             //         q.raw_metrics.push(val);
             //     }
             // }
-        }
+        }*/
     }
 
-    /*
         impl<'a> Iterator for MetricsReader<'a> {
-            type Item = &'a MetricsDocument<'a>;
+            type Item = MetricsDocument;
 
-            fn next(&mut self) -> Option<&'a MetricsDocument<'a>> {
+            fn next(&mut self) -> Option<MetricsDocument> {
                 if self.raw_metrics.is_empty() {
                     let blob = self.doc.get_binary_generic("data").unwrap();
 
                     let mut size_rdr = Cursor::new(&blob);
                     let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
                     println!("Uncompressed size {}", un_size);
-
+        
                     // skip the length in the compressed blob
                     let mut decoder = Decoder::new(&blob[4..]).unwrap();
-                    let mut decoded_data = Vec::new();
-                    decoder.read_to_end(&mut decoded_data).unwrap();
-
-                    let mut cur = Cursor::new(&decoded_data);
-                    self.ref_doc = Box::new(decode_document(&mut cur).unwrap());
-
-                    let metric_count = cur.read_i32::<LittleEndian>().unwrap();
-                    println!("metric_count {}", metric_count);
-
-                    self.sample_count = cur.read_i32::<LittleEndian>().unwrap();
+                    decoder.read_to_end(&mut self.decoded_data).unwrap();
+        
+                    let mut cur = Cursor::new(&self.decoded_data);
+                    self.ref_doc = Rc::new(bson::from_reader(&mut cur).unwrap());
+                    
+                    self.metrics_count = cur
+                        .read_i32::<LittleEndian>()
+                        .unwrap();
+                    println!("metric_count {}", self.metrics_count);
+        
+                    self.sample_count = cur
+                        .read_i32::<LittleEndian>()
+                        .unwrap();
                     println!("sample_count {}", self.sample_count);
 
                     // Extract metrics from reference document
                     //                let ref_metrics = extract_metrics(&self.ref_doc);
 
                     // Decode metrics
-                    self.raw_metrics.reserve((metric_count * self.sample_count) as usize);
+                    self.raw_metrics.reserve((self.metrics_count * self.sample_count) as usize);
 
                     // TODO: Don't decode all metrics initially
-                    let mut val: u64 = 0;
+
+                    let mut zeros_count = 0;
+
+                    let mut pos : usize = cur.position() as usize;
+                    let buf = self.decoded_data.as_ref();
+
                     for _ in 0..self.sample_count {
-                        for _ in 0..metric_count {
-                            let read_size = decode(cur.get_ref(), &mut val);
-                            cur.consume(read_size);
+                        for _ in 0..self.metrics_count {
+                            if zeros_count  > 0 {
+                                self.raw_metrics.push(0);
+                                zeros_count-=1;
+                                continue;
+                            }
+
+                            let mut val: u64 = 0;
+                            let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
+                            pos += read_size;
+
+                            if val == 0 {
+                                // Read zeros count
+                                let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
+                                pos += read_size;
+
+                                zeros_count = val;
+                            }
+                            
                             self.raw_metrics.push(val);
                         }
                     }
+
+                    assert_eq!((self.sample_count * self.metrics_count) as usize, self.raw_metrics.len());
                 }
 
                 match self.it_state {
                     MetricState::Reference => {
                         self.it_state = MetricState::Metrics;
-                        return Some(&MetricsDocument::Reference(&self.ref_doc));
+                        Some(MetricsDocument::Reference(self.ref_doc.clone()))
                     }
                     MetricState::Metrics => {
-                        return None;
-                        // if self.sample == self.sample_count {
-                        //     return None;
-                        // }
-                        // self.sample += 1;
+                        // return None;
+                        if self.sample == self.sample_count {
+                            return None;
+                        }
+                        self.sample += 1;
 
+                        let start_index : usize = ((self.sample - 1) * self.metrics_count) as usize;
+                        let end_index : usize = (self.sample * self.metrics_count) as usize;
+
+                        let d = fill_document(&self.ref_doc, &self.raw_metrics[start_index..end_index] );
+                        Some(MetricsDocument::Metrics(d))
                         // return Some(&MetricsDocument::Metrics(self.raw_metrics[((self.sample - 1) * self.metrics_count)..(self.sample * self.metrics_count)]))
                     }
                 }
             }
         }
-    */
 }
 
 /**
@@ -584,8 +631,6 @@ fn main() {
 
     let rdr = ftdc::BSONBlockReader::new(ftdc_metrics);
 
-    // rdr.decode();
-
     for item in rdr {
         match item {
             ftdc::RawBSONBlock::Metadata(doc) => {
@@ -593,10 +638,19 @@ fn main() {
             }
             ftdc::RawBSONBlock::Metrics(doc) => {
                 let mut rdr = ftdc::MetricsReader::new(&doc);
-                rdr.decode();
-                // for item in rdr {
-                //     println!("found metric");
-                // }
+
+                for item in rdr.into_iter() {
+                    println!("found metric");
+                    println!("metric {:?}", item);
+
+                    match item {
+                        MetricsDocument::Reference(_) => {}
+                        MetricsDocument::Metrics(_) => {
+                            return;
+                        }
+                    }
+
+                }
             }
         }
     }
