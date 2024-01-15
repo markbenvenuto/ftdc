@@ -267,52 +267,42 @@ mod ftdc {
         metrics
     }
 
-    fn fill_document_bson_int(
+
+    fn fill_to_bson_int(
         ref_field: (&String, &Bson),
         it: &mut dyn Iterator<Item = &u64>,
-        doc: &mut Document,
-    ) {
+    ) -> Bson {
+  
         match ref_field.1 {
             &Bson::Double(_) => {
-                doc.insert(
-                    ref_field.0.to_string(),
-                    Bson::Double(*it.next().unwrap() as f64),
-                );
+                    Bson::Double(*it.next().unwrap() as f64)
             }
             &Bson::Int64(_) => {
-                doc.insert(ref_field.0.to_string(), Bson::Int64(*it.next().unwrap() as i64 ));
+                 Bson::Int64(*it.next().unwrap() as i64 )
             }
             &Bson::Int32(_) => {
-                doc.insert(
-                    ref_field.0.to_string(),
-                    Bson::Int32(*it.next().unwrap() as i32),
-                );
+                    Bson::Int32(*it.next().unwrap() as i32)
+                
             }
             &Bson::Boolean(_) => {
-                doc.insert(
-                    ref_field.0.to_string(),
-                    Bson::Boolean(*it.next().unwrap() != 0),
-                );
+                    Bson::Boolean(*it.next().unwrap() != 0)
+                
             }
             &Bson::DateTime(_) => {
                 let p1 = it.next().unwrap();
 
-                doc.insert(
-                    ref_field.0.to_string(),
-                    Bson::DateTime(bson::DateTime::from_millis(*p1 as i64)),
-                );
+                    Bson::DateTime(bson::DateTime::from_millis(*p1 as i64))
+                
             }
             Bson::Timestamp(_) => {
                 let p1 = it.next().unwrap();
                 let p2 = it.next().unwrap();
 
-                doc.insert(
-                    ref_field.0.to_string(),
                     Bson::Timestamp(bson::Timestamp {
                         time: *p1 as u32,
                         increment: *p2 as u32,
-                    }),
-                );
+                    })
+                
             }
             &Bson::Decimal128(_) => {
                 panic!("Decimal128 not implemented")
@@ -322,65 +312,66 @@ mod ftdc {
                 for ref_field2 in o {
                     fill_document_bson_int(ref_field2, it, &mut doc_nested);
                 }
-                doc.insert(ref_field.0.to_string(), doc_nested);
+                Bson::Document(doc_nested)
             }
             Bson::Array( a) => {
-                panic!("Not yet implemented, need metric to Bson instead of metric to (field, Bson")
-                // let arr : Vec<Bson> = Vec::new();
+                let mut arr : Vec<Bson> = Vec::new();
 
-                // let c = "ignore".to_string();
+                let c = "ignore".to_string();
 
-                // for &ref b in a {
-                //     let mut doc_nested = Document::new();
-                //     let tuple = (&c, b);
-                //     fill_document_bson_int(tuple, it, &mut doc_nested);
-                //     arr.push(doc_nested);
-                // }
+                for &ref b in a {
+                    let tuple = (&c, b);
+                    arr.push(fill_to_bson_int(tuple, it));
+                }
                 
-                // doc.insert(ref_field.0.to_string(), arr);
-
+                 Bson::Array(arr)
             }
 
             Bson::JavaScriptCode(a) => {
-                doc.insert(ref_field.0.to_string(), Bson::JavaScriptCode(a.to_string()));
+                 Bson::JavaScriptCode(a.to_string())
             }
             Bson::JavaScriptCodeWithScope(a) => {
-                doc.insert(
-                    ref_field.0.to_string(),
-                    Bson::JavaScriptCodeWithScope(a.clone()),
-                );
+                    Bson::JavaScriptCodeWithScope(a.clone())
             }
             Bson::Binary( a) => {
-                doc.insert(ref_field.0.to_string(), Bson::Binary(a.clone()));
+                 Bson::Binary(a.clone())
             }
             Bson::ObjectId( a) => {
-                doc.insert(ref_field.0.to_string(), Bson::ObjectId(*a));
+                 Bson::ObjectId(*a)
             }
             Bson::String(a) => {
-                doc.insert(ref_field.0.to_string(), Bson::String(a.to_string()));
+                 Bson::String(a.to_string())
             }
             &Bson::Null => {
-                doc.insert(ref_field.0.to_string(), Bson::Null);
+                 Bson::Null
             }
             Bson::Symbol(a) => {
-                doc.insert(ref_field.0.to_string(), Bson::Symbol(a.to_string()));
+                 Bson::Symbol(a.to_string())
             }
             Bson::RegularExpression(a) => {
-                doc.insert(ref_field.0.to_string(), Bson::RegularExpression(a.clone()));
+                 Bson::RegularExpression(a.clone())
             }
             Bson::DbPointer(a) => {
-                doc.insert(ref_field.0.to_string(), Bson::DbPointer(a.clone()));
+                 Bson::DbPointer(a.clone())
             }
             &Bson::MaxKey => {
-                doc.insert(ref_field.0.to_string(), Bson::MaxKey);
+                 Bson::MaxKey
             }
             &Bson::MinKey => {
-                doc.insert(ref_field.0.to_string(), Bson::MinKey);
+                 Bson::MinKey
             }
             &Bson::Undefined => {
-                doc.insert(ref_field.0.to_string(), Bson::Undefined);
+                 Bson::Undefined
             }
         }
+    }
+    
+    fn fill_document_bson_int(
+        ref_field: (&String, &Bson),
+        it: &mut dyn Iterator<Item = &u64>,
+        doc: &mut Document,
+    ) {
+        doc.insert(ref_field.0.to_string(), fill_to_bson_int(ref_field, it));
     }
 
     pub fn fill_document(ref_doc: &Document, metrics: &[u64]) -> Document {
@@ -625,7 +616,8 @@ fn main() {
     println!("{:?}", opt);
 
     // let ftdc_metrics = "/data/db/diagnostic.data/metrics.2018-03-15T02-18-51Z-00000";
-    let ftdc_metrics = "/Users/mark/mongo/data/diagnostic.data/metrics.2022-08-11T19-59-54Z-00000";
+    // let ftdc_metrics = "/Users/mark/mongo/data/diagnostic.data/metrics.2022-08-11T19-59-54Z-00000";
+    let ftdc_metrics = "/Users/mark/projects/ftdc/metrics.2022-05-12T08-52-03Z-00000";
 
     decode_file(ftdc_metrics);
 
