@@ -1,23 +1,13 @@
 [package]
-name = "cli"
+name = "ftdc"
 version = "0.2.0"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2021"
 
-[workspace]
-members = [
-    "ftdc",
-]
-
 [dependencies]
-ftdc = {path="ftdc"}
-
 bson = { version= "2.8.1"}
 byteorder = "1.5.0"
 libflate = "2.0.0"
-# TODO - switch to clap
-structopt = "0.3.26"
-indicatif = "0.17.7"
 varinteger = "1.0.6"
 
 #chrono = "0.4.31"
