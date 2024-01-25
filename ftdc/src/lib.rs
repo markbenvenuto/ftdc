@@ -18,7 +18,7 @@ use std::rc::Rc;
 pub struct BSONMetricsWriter {
     // samples: usize,
     metrics: usize,
-    metric_vec: Vec<Vec<i64>>,
+    metric_vec: Vec<Vec<u64>>,
     ref_doc: Document,
     // blocks : Vec<Vec<u8>>,
 }
@@ -134,7 +134,7 @@ impl Iterator for BSONBlockReader {
         // todo: size == 4
         let mut size_rdr = Cursor::new(size_buf);
         let size = size_rdr.read_i32::<LittleEndian>().unwrap();
-        println!("size2 {}", size);
+        // println!("size2 {}", size);
         // // Look for the first 4 bytes
         // let mut rdr = Cursor::new(self.buffer);
         // // Note that we use type parameters to indicate which kind of byte order
@@ -152,7 +152,7 @@ impl Iterator for BSONBlockReader {
             return None;
         }
 
-        println!("size3 {}", v.len());
+        // println!("size3 {}", v.len());
 
         let doc: Document = bson::from_reader(&mut Cursor::new(&v)).unwrap();
 
@@ -166,29 +166,29 @@ impl Iterator for BSONBlockReader {
     }
 }
 
-fn extract_metrics_bson_int(value: &Bson, metrics: &mut Vec<i64>) {
+fn extract_metrics_bson_int(value: &Bson, metrics: &mut Vec<u64>) {
     match value {
         &Bson::Double(f) => {
-            metrics.push(f as i64);
+            metrics.push(f as u64);
         }
         &Bson::Int64(f) => {
-            metrics.push(f);
+            metrics.push(f as u64);
         }
         &Bson::Int32(f) => {
-            metrics.push(f as i64);
+            metrics.push(f as u64);
         }
         &Bson::Decimal128(_) => {
             panic!("Decimal128 not implemented")
         }
         &Bson::Boolean(f) => {
-            metrics.push(f as i64);
+            metrics.push(f as u64);
         }
         &Bson::DateTime(f) => {
-            metrics.push(f.timestamp_millis() as i64);
+            metrics.push(f.timestamp_millis() as u64);
         }
         &Bson::Timestamp(f) => {
-            metrics.push(f.time as i64);
-            metrics.push(f.increment as i64);
+            metrics.push(f.time as u64);
+            metrics.push(f.increment as u64);
         }
         Bson::Document(o) => {
             extract_metrics_int(o, metrics);
@@ -209,7 +209,7 @@ fn extract_metrics_bson_int(value: &Bson, metrics: &mut Vec<i64>) {
     }
 }
 
-fn extract_metrics_int(doc: &Document, metrics: &mut Vec<i64>) {
+fn extract_metrics_int(doc: &Document, metrics: &mut Vec<u64>) {
     for item in doc {
         let value = item.1;
 
@@ -217,8 +217,8 @@ fn extract_metrics_int(doc: &Document, metrics: &mut Vec<i64>) {
     }
 }
 
-pub fn extract_metrics(doc: &Document) -> Vec<i64> {
-    let mut metrics: Vec<i64> = Vec::new();
+pub fn extract_metrics(doc: &Document) -> Vec<u64> {
+    let mut metrics: Vec<u64> = Vec::new();
     extract_metrics_int(doc, &mut metrics);
     metrics
 }
@@ -403,9 +403,10 @@ pub struct MetricsReader<'a> {
     //data: Vec<i64>,
     it_state: MetricState,
     sample: i32,
-    sample_count: i32,
+    pub sample_count: i32,
     raw_metrics: Vec<u64>,
-    metrics_count: i32,
+    pub metrics_count: i32,
+    scratch : Vec<u64>,
 
     decoded_data: Vec<u8>,
 
@@ -423,6 +424,8 @@ impl<'a> MetricsReader<'a> {
             metrics_count: 0,
             decoded_data: Vec::new(),
             raw_metrics: Vec::new(),
+            scratch: Vec::new(),
+
             cursor: None,
         }
     }
@@ -476,6 +479,15 @@ impl<'a> MetricsReader<'a> {
     }*/
 }
 
+    /**
+     * Compute the offset into an array for given (sample, metric) pair
+     */
+fn get_array_offset(sample_count : i32,
+        sample : i32,
+        metric : i32) -> usize {
+((metric * sample_count) + sample) as usize
+}
+
 impl<'a> Iterator for MetricsReader<'a> {
     type Item = MetricsDocument;
 
@@ -485,7 +497,7 @@ impl<'a> Iterator for MetricsReader<'a> {
 
             let mut size_rdr = Cursor::new(&blob);
             let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
-            println!("Uncompressed size {}", un_size);
+            // println!("Uncompressed size {}", un_size);
 
             // skip the length in the compressed blob
             let mut decoder = Decoder::new(&blob[4..]).unwrap();
@@ -494,30 +506,45 @@ impl<'a> Iterator for MetricsReader<'a> {
             let mut cur = Cursor::new(&self.decoded_data);
             self.ref_doc = Rc::new(bson::from_reader(&mut cur).unwrap());
 
+            // let mut pos1: usize = cur.position() as usize;
+            // println!("pos:{:?}", pos1);
+
             self.metrics_count = cur.read_i32::<LittleEndian>().unwrap();
-            println!("metric_count {}", self.metrics_count);
+            // println!("metric_count {}", self.metrics_count);
 
             self.sample_count = cur.read_i32::<LittleEndian>().unwrap();
-            println!("sample_count {}", self.sample_count);
+            // println!("sample_count {}", self.sample_count);
 
             // Extract metrics from reference document
-            //                let ref_metrics = extract_metrics(&self.ref_doc);
+            let ref_metrics = extract_metrics(&self.ref_doc);
+            assert_eq!(ref_metrics.len(), self.metrics_count as usize);
+            // println!("{:?}", ref_metrics);
+
+            self.scratch.resize(ref_metrics.len(), 0);
+
+            println!("Ref: Sample {} Metric {}", self.sample_count, self.metrics_count);
 
             // Decode metrics
             self.raw_metrics
                 .reserve((self.metrics_count * self.sample_count) as usize);
 
-            // TODO: Don't decode all metrics initially
-
             let mut zeros_count = 0;
 
             let mut pos: usize = cur.position() as usize;
+            // println!("pos:{:?}", pos);
             let buf = self.decoded_data.as_ref();
 
-            for _ in 0..self.sample_count {
-                for _ in 0..self.metrics_count {
+            self.raw_metrics.resize((self.sample_count * self.metrics_count )as usize, 0);
+
+            if self.sample_count == 0 || self.metrics_count == 0{
+                self.it_state = MetricState::Metrics;
+                return Some(MetricsDocument::Reference(self.ref_doc.clone()));
+            }
+
+            for i in 0..self.metrics_count {
+                for j in 0..self.sample_count {
                     if zeros_count > 0 {
-                        self.raw_metrics.push(0);
+                        self.raw_metrics[get_array_offset(self.sample_count, j, i)] = 0;
                         zeros_count -= 1;
                         continue;
                     }
@@ -534,14 +561,31 @@ impl<'a> Iterator for MetricsReader<'a> {
                         zeros_count = val;
                     }
 
-                    self.raw_metrics.push(val);
+                    // println!("{:?}",val);
+                    self.raw_metrics[get_array_offset(self.sample_count, j, i)] = val;
                 }
             }
 
-            assert_eq!(
-                (self.sample_count * self.metrics_count) as usize,
-                self.raw_metrics.len()
-            );
+            assert_eq!(pos, buf.len());
+
+            // Inflate the metrics
+            for i in 0..self.metrics_count {
+                let (v, _)  = self.raw_metrics[get_array_offset(self.sample_count, 0, i)].overflowing_add( (ref_metrics[i as usize] as u64));
+                self.raw_metrics[get_array_offset(self.sample_count, 0, i)] = v;
+            }
+        
+            for i in 0..self.metrics_count {
+                for j in 1..self.sample_count {
+                    let (v, _) = self.raw_metrics[get_array_offset(self.sample_count, j, i)].overflowing_add(
+                    self.raw_metrics[get_array_offset(self.sample_count, j -1 , i)]) ;
+                self.raw_metrics[get_array_offset(self.sample_count, j, i)] = v;
+
+                }
+            }
+
+            // println!("{:?}", self.raw_metrics);
+
+
         }
 
         match self.it_state {
@@ -556,10 +600,12 @@ impl<'a> Iterator for MetricsReader<'a> {
                 }
                 self.sample += 1;
 
-                let start_index: usize = ((self.sample - 1) * self.metrics_count) as usize;
-                let end_index: usize = (self.sample * self.metrics_count) as usize;
+                for i in 0..self.metrics_count {
+                    self.scratch[i as usize] = 
+                    self.raw_metrics[get_array_offset(self.sample_count, self.sample - 1, i)];
+                }
 
-                let d = fill_document(&self.ref_doc, &self.raw_metrics[start_index..end_index]);
+                let d = fill_document(&self.ref_doc, &&self.scratch);
                 Some(MetricsDocument::Metrics(d))
                 // return Some(&MetricsDocument::Metrics(self.raw_metrics[((self.sample - 1) * self.metrics_count)..(self.sample * self.metrics_count)]))
             }
