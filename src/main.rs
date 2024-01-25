@@ -130,7 +130,11 @@ fn analyze_ref(doc: &Document, deltas: &mut HashMap<String, Vec<i64> >)  {
 
         let sub = doc.get_document(key).unwrap();
         let sub_delta = sub.get_datetime("end").unwrap().timestamp_millis() - sub.get_datetime("start").unwrap().timestamp_millis();
-        // println!("sub_delta: {:?}: {:?}", key, sub_delta);
+
+        if(sub_delta > 10) {
+            println!("sub_delta: {}, {}, {}, {}", sub.get_datetime("start").unwrap().to_string(), sub.get_datetime("end").unwrap().to_string(), key, sub_delta);
+        }
+
         if !deltas.contains_key(key) {
             deltas.insert(key.to_owned(), Vec::new());
         }
@@ -158,7 +162,8 @@ fn analyze_doc(doc: &Document, deltas: &mut HashMap<String, Vec<i64> >)  {
 
         let sub = doc.get_document(key).unwrap();
         let sub_delta = sub.get_datetime("end").unwrap().timestamp_millis() - sub.get_datetime("start").unwrap().timestamp_millis();
-        // println!("sub_delta: {:?}: {:?}", key, sub_delta);
+
+        // println!("sub_delta2: {:?}: {:?}", key, sub_delta);
         deltas.get_mut(key).unwrap().push(sub_delta);
     }
 }
@@ -174,9 +179,11 @@ fn main() {
     // let ftdc_metrics = "/Users/mark/mongo/data/diagnostic.data/metrics.2022-08-11T19-59-54Z-00000";
     // let ftdc_metrics = "/Users/mark/projects/ftdc/metrics.2022-05-12T08-52-03Z-00000";
     // let ftdc_metrics = "/Users/mark/projects/ftdc/metrics.2024-01-23T17-15-41Z-00000";
-    let ftdc_metrics = "/Users/mark/projects/ftdc/metrics.2024-01-23T00-01-07Z-00000";
+    // let ftdc_metrics = "/Users/mark/projects/ftdc/metrics.2024-01-23T00-01-07Z-00000";
+    // let ftdc_metrics = "/home/mark/projects/ftdc/aa/WorkloadOutput/reports-2024-01-24T06:33:28.438224+00:00/majority_reads10_k_threads/mongod.0/diagnostic.data/metrics.2024-01-24T06-27-14Z-00000";
 
-    
+    let ftdc_metrics = "/home/mark/projects/ftdc/ac/WorkloadOutput/reports-2024-01-24T06:27:26.457730+00:00/majority_writes10_k_threads/mongod.0/diagnostic.data/metrics.2024-01-24T06-19-50Z-00000";
+
     let mut names = HashSet::<String>::new();
 
     names.insert("base".to_owned());
@@ -195,73 +202,116 @@ fn main() {
     let mut i = 0;
     // println!("[");
     let mut c = 0;
+    let mut b = 0;
+    let mut m = 0;
+    let mut r = 0;
+
 
     for item in rdr {
+         b += 1;
+
         match item {
             ftdc::RawBSONBlock::Metadata(_) => {
             }
             ftdc::RawBSONBlock::Metrics(doc) => {
                 let mut rdr = ftdc::MetricsReader::new(&doc);
+                for m_item in rdr.into_iter() {
 
-
-                for item in rdr.into_iter() {
-                    match item {
+                    match m_item {
                         MetricsDocument::Reference(d1) => {
-                            // println!("{},", serde_json::to_string_pretty(&d1.as_ref()).unwrap());
-                            c+=1;
-                            // println!("Ref");
-                            // println!("Ref: Sample {} Metric {}", rdr.sample_count, rdr.metrics_count);
+                            analyze_ref(&d1, &mut deltas);
+                            c += 1;
+                            r += 1;
                         }
                         MetricsDocument::Metrics(d1) => {
-                            break;
+                            analyze_doc(&d1, &mut deltas);
+                            m += 1;
+                            c += 1;
+
                         }
                     };
 
-                    
-                    // match item {
-                    //     MetricsDocument::Reference(d1) => {
-                    //         // println!("ref");
-                    //         analyze_ref(&d1, &mut deltas);
-                    //     }
-                    //     MetricsDocument::Metrics(d1) => {
-                    //         analyze_doc(&d1, &mut deltas);
-                    //         // i = 1;
-                    //     }
-                    // };
 
-
-                    // let v = 
-                    // match item {
-                    //     MetricsDocument::Reference(d1) => {
-                    //         // println!("ref");
-                    //         analyze_doc(&d1, &mut names)
-                    //     }
-                    //     MetricsDocument::Metrics(d1) => {
-                    //         analyze_doc(&d1, &mut names)
-                    //     }
-                    // };
-                    // println!("{},", serde_json::to_string_pretty(&v).unwrap());
-
-                    // match item {
-                    //     MetricsDocument::Reference(d1) => {
-                    //         // println!("ref");
-                    //         // analyze_doc(&d1, &mut names);
-                    //     }
-                    //     MetricsDocument::Metrics(_) => {
-                    //     }
-                    // };
-                
+                    if( c % 100 == 0) {
+                        println!("{}, {}, {}, {}", b ,c, r, m);
+                    }
                 }
-
             }
         }
 
-        if i == 1 {
-            break
-        }
     }
 
-    println!("count: {}", c);
+    println!("Done");
+    // for item in rdr {
+    //     match item {
+    //         ftdc::RawBSONBlock::Metadata(_) => {
+    //         }
+    //         ftdc::RawBSONBlock::Metrics(doc) => {
+    //             let mut rdr = ftdc::MetricsReader::new(&doc);
+
+
+    //             for item in rdr.into_iter() {
+    //                 // match item {
+    //                 //     MetricsDocument::Reference(d1) => {
+    //                 //         // println!("{},", serde_json::to_string_pretty(&d1.as_ref()).unwrap());
+    //                 //         c+=1;
+    //                 //         // println!("Ref");
+    //                 //         // println!("Ref: Sample {} Metric {}", rdr.sample_count, rdr.metrics_count);
+    //                 //     }
+    //                 //     MetricsDocument::Metrics(d1) => {
+    //                 //         break;
+    //                 //     }
+    //                 // };
+
+
+    //                 match item {
+    //                     MetricsDocument::Reference(d1) => {
+    //                         // println!("ref");
+    //                         analyze_ref(&d1, &mut deltas);
+    //                         c += 1
+    //                     }
+    //                     MetricsDocument::Metrics(d1) => {
+    //                         analyze_doc(&d1, &mut deltas);
+    //                         // i = 1;
+    //                     }
+    //                 };
+
+    //                 if( c % 100 == 0) {
+    //                     println!("{}",c);
+    //                 }
+
+    //                 // let v =
+    //                 // match item {
+    //                 //     MetricsDocument::Reference(d1) => {
+    //                 //         // println!("ref");
+    //                 //         analyze_doc(&d1, &mut names)
+    //                 //     }
+    //                 //     MetricsDocument::Metrics(d1) => {
+    //                 //         analyze_doc(&d1, &mut names)
+    //                 //     }
+    //                 // };
+    //                 // println!("{},", serde_json::to_string_pretty(&v).unwrap());
+
+    //                 // match item {
+    //                 //     MetricsDocument::Reference(d1) => {
+    //                 //         // println!("ref");
+    //                 //         // analyze_doc(&d1, &mut names);
+    //                 //     }
+    //                 //     MetricsDocument::Metrics(_) => {
+    //                 //     }
+    //                 // };
+
+    //             }
+
+    //         }
+    //     }
+
+    //     if i == 1 {
+    //         break
+    //     }
+    // }
+
+    // println!("count: {}", c);
 
     // let keys : Vec<&String> = deltas.keys().collect();
     // let kk = keys.as_slice();
@@ -275,8 +325,9 @@ fn main() {
     //         print!("{},", deltas[k.as_str()][c]);
     //     }
     //     println!("0")
-}
+    // }
 
+}
 
     // println!("]");
     /* Basic Loop
