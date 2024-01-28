@@ -1,17 +1,25 @@
-use std::io;
-// use std::io::prelude::*;
-use std::io::BufReader;
-// use std::io::Reader;
+// Copyright [2024] [Mark Benvenuto]
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::fs::File;
+use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
 
-// use byteorder::{LittleEndian, ReadBytesExt};
-
+use anyhow::Result;
 use bson::Bson;
 use bson::Document;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-// use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use libflate::zlib::{Decoder, Encoder};
 use std::io::Cursor;
 use std::rc::Rc;
@@ -41,7 +49,7 @@ impl BSONMetricsWriter {
         extract_metrics_int(doc, &mut met_vec);
 
         // first document
-        if (self.ref_doc.is_empty()) {
+        if self.ref_doc.is_empty() {
             self.ref_doc = doc.clone();
 
             self.metric_vec.clear();
@@ -103,12 +111,12 @@ pub enum RawBSONBlock {
 }
 
 impl BSONBlockReader {
-    pub fn new(file_name: &str) -> BSONBlockReader {
-        let ff = File::open(file_name).unwrap();
+    pub fn new(file_name: &str) -> Result<BSONBlockReader> {
+        let ff = File::open(file_name)?;
 
-        BSONBlockReader {
+        Ok(BSONBlockReader {
             reader: BufReader::new(ff),
-        }
+        })
     }
 }
 
@@ -408,329 +416,169 @@ pub struct DecodedMetricBlock {
     raw_metrics: Vec<u64>,
 }
 
-pub fn decode_metric_block<'a>(doc: &'a Document)  -> DecodedMetricBlock {
-        let blob = doc.get_binary_generic("data").unwrap();
+pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> {
+    let blob = doc.get_binary_generic("data")?;
 
-        let mut size_rdr = Cursor::new(&blob);
-        let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
-        // println!("Uncompressed size {}", un_size);
+    let mut size_rdr = Cursor::new(&blob);
+    let un_size = size_rdr.read_i32::<LittleEndian>()?;
+    // println!("Uncompressed size {}", un_size);
 
-        // skip the length in the compressed blob
-        let mut decoded_data = Vec::<u8>::new();
-        let mut decoder = Decoder::new(&blob[4..]).unwrap();
-        decoder.read_to_end(&mut decoded_data).unwrap();
+    // skip the length in the compressed blob
+    let mut decoded_data = Vec::<u8>::new();
+    let mut decoder = Decoder::new(&blob[4..])?;
+    decoder.read_to_end(&mut decoded_data)?;
 
-        let mut cur = Cursor::new(&decoded_data);
-        let ref_doc = Rc::new(bson::from_reader(&mut cur).unwrap());
+    let mut cur = Cursor::new(&decoded_data);
+    let ref_doc = Rc::new(bson::from_reader(&mut cur)?);
 
-        // let mut pos1: usize = cur.position() as usize;
-        // println!("pos:{:?}", pos1);
+    // let mut pos1: usize = cur.position() as usize;
+    // println!("pos:{:?}", pos1);
 
-        let metrics_count = cur.read_i32::<LittleEndian>().unwrap();
-        // println!("metric_count {}", metrics_count);
+    let metrics_count = cur.read_i32::<LittleEndian>()?;
+    // println!("metric_count {}", metrics_count);
 
-        let sample_count = cur.read_i32::<LittleEndian>().unwrap();
-        // println!("sample_count {}", sample_count);
+    let sample_count = cur.read_i32::<LittleEndian>()?;
+    // println!("sample_count {}", sample_count);
 
-        // Extract metrics from reference document
-        let ref_metrics = extract_metrics(&ref_doc);
-        assert_eq!(ref_metrics.len(), metrics_count as usize);
-        // println!("{:?}", ref_metrics);
+    // Extract metrics from reference document
+    let ref_metrics = extract_metrics(&ref_doc);
+    assert_eq!(ref_metrics.len(), metrics_count as usize);
+    // println!("{:?}", ref_metrics);
 
-        let mut scratch = Vec::<u64>::new();
-        scratch.resize(ref_metrics.len(), 0);
+    let mut scratch = Vec::<u64>::new();
+    scratch.resize(ref_metrics.len(), 0);
 
-        // println!("Ref: Sample {} Metric {}", self.sample_count, self.metrics_count);
+    // println!("Ref: Sample {} Metric {}", self.sample_count, self.metrics_count);
 
-        // Decode metrics
-        let mut raw_metrics = Vec::<u64>::new();
+    // Decode metrics
+    let mut raw_metrics = Vec::<u64>::new();
 
-        raw_metrics
-            .reserve((metrics_count * sample_count) as usize);
+    raw_metrics.reserve((metrics_count * sample_count) as usize);
 
-        let mut zeros_count = 0;
+    let mut zeros_count = 0;
 
-        let mut pos: usize = cur.position() as usize;
-        // println!("pos:{:?}", pos);
-        let buf = decoded_data.as_ref();
+    let mut pos: usize = cur.position() as usize;
+    // println!("pos:{:?}", pos);
+    let buf = decoded_data.as_ref();
 
-
-        if sample_count == 0 || metrics_count == 0{
-            return DecodedMetricBlock {
-                ref_doc: ref_doc,
-                sample_count: sample_count,
-                metrics_count: metrics_count,
-                raw_metrics : raw_metrics,
-            };
-        }
-
-        raw_metrics.resize((sample_count * metrics_count )as usize, 0);
-
-        for i in 0..metrics_count {
-            for j in 0..sample_count {
-                if zeros_count > 0 {
-                    raw_metrics[get_array_offset(sample_count, j, i)] = 0;
-                    zeros_count -= 1;
-                    continue;
-                }
-
-                let mut val: u64 = 0;
-                let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
-                pos += read_size;
-
-                if val == 0 {
-                    // Read zeros count
-                    let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
-                    pos += read_size;
-
-                    zeros_count = val;
-                }
-
-                // println!("{:?}",val);
-                raw_metrics[get_array_offset(sample_count, j, i)] = val;
-            }
-        }
-
-        assert_eq!(pos, buf.len());
-
-        // Inflate the metrics
-        for i in 0..metrics_count {
-            let (v, _)  = raw_metrics[get_array_offset(sample_count, 0, i)].overflowing_add( (ref_metrics[i as usize] as u64));
-            raw_metrics[get_array_offset(sample_count, 0, i)] = v;
-        }
-
-        for i in 0..metrics_count {
-            for j in 1..sample_count {
-                let (v, _) = raw_metrics[get_array_offset(sample_count, j, i)].overflowing_add(
-                raw_metrics[get_array_offset(sample_count, j -1 , i)]) ;
-            raw_metrics[get_array_offset(sample_count, j, i)] = v;
-
-            }
-        }
-
-        return DecodedMetricBlock {
+    if sample_count == 0 || metrics_count == 0 {
+        return Ok(DecodedMetricBlock {
             ref_doc: ref_doc,
             sample_count: sample_count,
             metrics_count: metrics_count,
-            raw_metrics : raw_metrics,
-        };
-
+            raw_metrics: raw_metrics,
+        });
     }
 
-pub struct MetricsReader<'a> {
-    doc: &'a Document,
-    ref_doc: Rc<Document>,
-    //data: Vec<i64>,
-    it_state: MetricState,
-    sample: i32,
-    pub sample_count: i32,
-    raw_metrics: Vec<u64>,
-    pub metrics_count: i32,
-    scratch : Vec<u64>,
+    raw_metrics.resize((sample_count * metrics_count) as usize, 0);
 
-    decoded_data: Vec<u8>,
+    for i in 0..metrics_count {
+        for j in 0..sample_count {
+            if zeros_count > 0 {
+                raw_metrics[get_array_offset(sample_count, j, i)] = 0;
+                zeros_count -= 1;
+                continue;
+            }
 
-    cursor: Option<Cursor<&'a Vec<u8>>>,
-}
+            let mut val: u64 = 0;
+            let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
+            pos += read_size;
 
-impl<'a> MetricsReader<'a> {
-    pub fn new<'b>(doc: &'b Document) -> MetricsReader<'b> {
-        MetricsReader {
-            doc,
-            ref_doc: Rc::new(Document::new()),
-            it_state: MetricState::Reference,
-            sample: 0,
-            sample_count: 0,
-            metrics_count: 0,
-            decoded_data: Vec::new(),
-            raw_metrics: Vec::new(),
-            scratch: Vec::new(),
+            if val == 0 {
+                // Read zeros count
+                let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
+                pos += read_size;
 
-            cursor: None,
+                zeros_count = val;
+            }
+
+            raw_metrics[get_array_offset(sample_count, j, i)] = val;
         }
     }
 
-    /*pub fn decode(&'a mut self) {
-        let blob = self.doc.get_binary_generic("data").unwrap();
+    assert_eq!(pos, buf.len());
 
-        let mut size_rdr = Cursor::new(&blob);
-        let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
-        println!("Uncompressed size {}", un_size);
+    // Inflate the metrics
+    for i in 0..metrics_count {
+        let (v, _) = raw_metrics[get_array_offset(sample_count, 0, i)]
+            .overflowing_add(ref_metrics[i as usize] as u64);
+        raw_metrics[get_array_offset(sample_count, 0, i)] = v;
+    }
 
-        // skip the length in the compressed blob
-        let mut decoder = Decoder::new(&blob[4..]).unwrap();
-        decoder.read_to_end(&mut self.decoded_data).unwrap();
+    for i in 0..metrics_count {
+        for j in 1..sample_count {
+            let (v, _) = raw_metrics[get_array_offset(sample_count, j, i)]
+                .overflowing_add(raw_metrics[get_array_offset(sample_count, j - 1, i)]);
+            raw_metrics[get_array_offset(sample_count, j, i)] = v;
+        }
+    }
 
-        self.cursor = Some(Cursor::new(&self.decoded_data));
-        self.ref_doc = Rc::new(bson::from_reader(&mut self.cursor.as_mut().unwrap()).unwrap());
-
-        let metric_count = self
-            .cursor
-            .as_mut()
-            .unwrap()
-            .read_i32::<LittleEndian>()
-            .unwrap();
-        println!("metric_count {}", metric_count);
-
-        self.sample_count = self
-            .cursor
-            .as_mut()
-            .unwrap()
-            .read_i32::<LittleEndian>()
-            .unwrap();
-        println!("sample_count {}", self.sample_count);
-
-        // Extract metrics from reference document
-        // let ref_metrics = extract_metrics(&self.ref_doc);
-
-        // Decode metrics
-        self.raw_metrics
-            .reserve((metric_count * self.sample_count) as usize);
-
-        // TODO: Don't decode all metrics initially
-        // let mut val: u64 = 0;
-        // for _ in 0..q.sample_count {
-        //     for _ in 0..metric_count {
-        //         let read_size = decode(q.cursor.get_ref(), &mut val);
-        //         q.cursor.consume(read_size);
-        //         q.raw_metrics.push(val);
-        //     }
-        // }
-    }*/
+    Ok(DecodedMetricBlock {
+        ref_doc: ref_doc,
+        sample_count: sample_count,
+        metrics_count: metrics_count,
+        raw_metrics: raw_metrics,
+    })
 }
 
-    /**
-     * Compute the offset into an array for given (sample, metric) pair
-     */
-fn get_array_offset(sample_count : i32,
-        sample : i32,
-        metric : i32) -> usize {
-((metric * sample_count) + sample) as usize
+pub struct MetricsReader<'a> {
+    doc: &'a Document,
+    pub decoded_block: DecodedMetricBlock,
+
+    it_state: MetricState,
+    sample: i32,
+    scratch: Vec<u64>,
+}
+
+impl<'a> MetricsReader<'a> {
+    pub fn new<'b>(doc: &'b Document) -> Result<MetricsReader<'b>> {
+        let db = decode_metric_block(doc)?;
+        let mut s = Vec::new();
+        s.resize(db.metrics_count as usize, 0);
+
+        Ok(MetricsReader {
+            doc: doc,
+            decoded_block: db,
+            it_state: MetricState::Reference,
+            sample: 0,
+            scratch: s,
+        })
+    }
+}
+
+/**
+ * Compute the offset into an array for given (sample, metric) pair
+ */
+fn get_array_offset(sample_count: i32, sample: i32, metric: i32) -> usize {
+    ((metric * sample_count) + sample) as usize
 }
 
 impl<'a> Iterator for MetricsReader<'a> {
     type Item = MetricsDocument;
 
     fn next(&mut self) -> Option<MetricsDocument> {
-        if self.metrics_count  == 0 {
-            let blob = self.doc.get_binary_generic("data").unwrap();
-
-            let mut size_rdr = Cursor::new(&blob);
-            let un_size = size_rdr.read_i32::<LittleEndian>().unwrap();
-            // println!("Uncompressed size {}", un_size);
-
-            // skip the length in the compressed blob
-            let mut decoder = Decoder::new(&blob[4..]).unwrap();
-            decoder.read_to_end(&mut self.decoded_data).unwrap();
-
-            let mut cur = Cursor::new(&self.decoded_data);
-            self.ref_doc = Rc::new(bson::from_reader(&mut cur).unwrap());
-
-            // let mut pos1: usize = cur.position() as usize;
-            // println!("pos:{:?}", pos1);
-
-            self.metrics_count = cur.read_i32::<LittleEndian>().unwrap();
-            // println!("metric_count {}", self.metrics_count);
-
-            self.sample_count = cur.read_i32::<LittleEndian>().unwrap();
-            // println!("sample_count {}", self.sample_count);
-
-            // Extract metrics from reference document
-            let ref_metrics = extract_metrics(&self.ref_doc);
-            assert_eq!(ref_metrics.len(), self.metrics_count as usize);
-            // println!("{:?}", ref_metrics);
-
-            self.scratch.resize(ref_metrics.len(), 0);
-
-            // println!("Ref: Sample {} Metric {}", self.sample_count, self.metrics_count);
-
-            // Decode metrics
-            self.raw_metrics
-                .reserve((self.metrics_count * self.sample_count) as usize);
-
-            let mut zeros_count = 0;
-
-            let mut pos: usize = cur.position() as usize;
-            // println!("pos:{:?}", pos);
-            let buf = self.decoded_data.as_ref();
-
-            self.raw_metrics.resize((self.sample_count * self.metrics_count )as usize, 0);
-
-            if self.sample_count == 0 || self.metrics_count == 0{
-                self.it_state = MetricState::Metrics;
-                return Some(MetricsDocument::Reference(self.ref_doc.clone()));
-            }
-
-            for i in 0..self.metrics_count {
-                for j in 0..self.sample_count {
-                    if zeros_count > 0 {
-                        self.raw_metrics[get_array_offset(self.sample_count, j, i)] = 0;
-                        zeros_count -= 1;
-                        continue;
-                    }
-
-                    let mut val: u64 = 0;
-                    let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
-                    pos += read_size;
-
-                    if val == 0 {
-                        // Read zeros count
-                        let read_size = varinteger::decode_with_offset(buf, pos, &mut val);
-                        pos += read_size;
-
-                        zeros_count = val;
-                    }
-
-                    // println!("{:?}",val);
-                    self.raw_metrics[get_array_offset(self.sample_count, j, i)] = val;
-                }
-            }
-
-            assert_eq!(pos, buf.len());
-
-            // Inflate the metrics
-            for i in 0..self.metrics_count {
-                let (v, _)  = self.raw_metrics[get_array_offset(self.sample_count, 0, i)].overflowing_add( (ref_metrics[i as usize] as u64));
-                self.raw_metrics[get_array_offset(self.sample_count, 0, i)] = v;
-            }
-
-            for i in 0..self.metrics_count {
-                for j in 1..self.sample_count {
-                    let (v, _) = self.raw_metrics[get_array_offset(self.sample_count, j, i)].overflowing_add(
-                    self.raw_metrics[get_array_offset(self.sample_count, j -1 , i)]) ;
-                self.raw_metrics[get_array_offset(self.sample_count, j, i)] = v;
-
-                }
-            }
-
-            // println!("{:?}", self.raw_metrics);
-
-
-        }
-
         match self.it_state {
             MetricState::Reference => {
                 self.it_state = MetricState::Metrics;
 
-                Some(MetricsDocument::Reference(self.ref_doc.clone()))
+                Some(MetricsDocument::Reference(
+                    self.decoded_block.ref_doc.clone(),
+                ))
             }
             MetricState::Metrics => {
-                // return None;
-
-                if self.sample == self.sample_count {
+                if self.sample == self.decoded_block.sample_count {
                     return None;
                 }
 
                 self.sample += 1;
 
-                for i in 0..self.metrics_count {
-                    self.scratch[i as usize] =
-                    self.raw_metrics[get_array_offset(self.sample_count, self.sample - 1, i)];
+                for i in 0..self.decoded_block.metrics_count {
+                    self.scratch[i as usize] = self.decoded_block.raw_metrics
+                        [get_array_offset(self.decoded_block.sample_count, self.sample - 1, i)];
                 }
 
-                let d = fill_document(&self.ref_doc, &&self.scratch);
+                let d = fill_document(&self.decoded_block.ref_doc, &&self.scratch);
                 Some(MetricsDocument::Metrics(d))
-                // return Some(&MetricsDocument::Metrics(self.raw_metrics[((self.sample - 1) * self.metrics_count)..(self.sample * self.metrics_count)]))
             }
         }
     }

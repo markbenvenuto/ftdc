@@ -3,12 +3,14 @@ name = "ftdc"
 version = "0.2.0"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 bson = { version= "2.8.1"}
 byteorder = "1.5.0"
 libflate = "2.0.0"
 varinteger = "1.0.6"
+anyhow = "1.0.79"
 
 #chrono = "0.4.31"
 streaming-iterator = "0.1.9"
