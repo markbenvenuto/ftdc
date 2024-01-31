@@ -26,19 +26,28 @@ use std::rc::Rc;
 
 pub struct BSONMetricsWriter {
     // samples: usize,
+    max_samples: usize,
+
     metrics: usize,
+
+    // TODO - change this to deltas array so we keep this column oriented in memory
+    // also store the un delta encoded metrics as we accumulate samples
     metric_vec: Vec<Vec<u64>>,
     ref_doc: Document,
+    ref_doc_vec: Vec<u64>,
+
     // blocks : Vec<Vec<u8>>,
 }
 
 impl BSONMetricsWriter {
-    pub fn new() -> BSONMetricsWriter {
+    pub fn new(max_samples: usize) -> BSONMetricsWriter {
         BSONMetricsWriter {
             // samples : 0,
+            max_samples,
             metrics: 0,
             metric_vec: Vec::new(),
             ref_doc: Document::new(),
+            ref_doc_vec : Vec::new(),
             // blocks: Vec::new()
         }
     }
@@ -51,9 +60,11 @@ impl BSONMetricsWriter {
         // first document
         if self.ref_doc.is_empty() {
             self.ref_doc = doc.clone();
-
+            
             self.metric_vec.clear();
             self.metrics = met_vec.len();
+
+            self.ref_doc_vec = met_vec;
             // self.samples = 0;
 
             // self.metric_vec.push(met_vec);
@@ -64,6 +75,7 @@ impl BSONMetricsWriter {
         if self.metrics == met_vec.len() {
             self.metric_vec.push(met_vec);
         } else {
+            // New block, flush chunk
             self.flush_block();
 
             self.ref_doc = doc.clone();
@@ -73,7 +85,26 @@ impl BSONMetricsWriter {
         }
     }
 
-    fn reset_block(&mut self) {}
+    // Compress Metric Vectors
+    fn compress_metric_vec(&mut self) -> Vec<u8> {
+        assert!(self.metric_vec.len() > 0);
+
+        let mut out = Vec::<u8>::new();
+
+        let metric_count = self.ref_doc_vec.len();
+        for m in 0..metric_count {
+            self.metric_vec[0][m] = self.metric_vec[0][m] - self.ref_doc_vec[m]; 
+        }
+
+        let sample_count = self.metric_vec.len();
+        for s in 1..sample_count {
+            for m in 0..metric_count {
+                self.metric_vec[s][m] = self.metric_vec[s][m] - self.metric_vec[s - 1][m]; 
+            }
+        }
+
+        out
+    }
 
     ///
     /// Format
@@ -81,16 +112,17 @@ impl BSONMetricsWriter {
     /// zlib_block
     ///
     /// zlib_block
+    /// bson doc
     /// i32 metric
     /// i32 sample
     /// bytes block
-    pub fn flush_block(&mut self) {
+    pub fn flush_block(&mut self) -> Result<()> {
         // TODO - compress block
         let mut uncompressed_block: Vec<u8> = Vec::new();
         uncompressed_block.reserve(4 + 4 + self.metrics * self.metric_vec.len());
 
-        uncompressed_block.write_i32::<LittleEndian>(self.metrics as i32);
-        uncompressed_block.write_i32::<LittleEndian>(self.metric_vec.len() as i32);
+        uncompressed_block.write_i32::<LittleEndian>(self.metrics as i32)?;
+        uncompressed_block.write_i32::<LittleEndian>(self.metric_vec.len() as i32)?;
 
         // TODO
         // Compress
@@ -98,6 +130,8 @@ impl BSONMetricsWriter {
         // let mut encoder = Encoder::new(Vec::new());
         // encoder.write_all()
         // let encoded_data = encoder.finish().into_result().unwrap();
+
+        Ok(())
     }
 }
 
@@ -409,7 +443,9 @@ enum MetricState {
 
 pub struct DecodedMetricBlock {
     ref_doc: Rc<Document>,
+    pub ref_doc_size_bytes: usize,
 
+    pub chunk_size_bytes: usize,
     pub sample_count: i32,
     pub metrics_count: i32,
 
@@ -418,6 +454,7 @@ pub struct DecodedMetricBlock {
 
 pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> {
     let blob = doc.get_binary_generic("data")?;
+    let chunk_size_bytes = blob.len();
 
     let mut size_rdr = Cursor::new(&blob);
     let un_size = size_rdr.read_i32::<LittleEndian>()?;
@@ -429,6 +466,10 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
     decoder.read_to_end(&mut decoded_data)?;
 
     let mut cur = Cursor::new(&decoded_data);
+
+    let ref_doc_size_bytes = cur.read_i32::<LittleEndian>()? as usize;
+    cur.set_position(0);
+
     let ref_doc = Rc::new(bson::from_reader(&mut cur)?);
 
     // let mut pos1: usize = cur.position() as usize;
@@ -464,6 +505,8 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
     if sample_count == 0 || metrics_count == 0 {
         return Ok(DecodedMetricBlock {
             ref_doc: ref_doc,
+            ref_doc_size_bytes,
+            chunk_size_bytes,
             sample_count: sample_count,
             metrics_count: metrics_count,
             raw_metrics: raw_metrics,
@@ -515,6 +558,8 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
 
     Ok(DecodedMetricBlock {
         ref_doc: ref_doc,
+        ref_doc_size_bytes,
+        chunk_size_bytes,
         sample_count: sample_count,
         metrics_count: metrics_count,
         raw_metrics: raw_metrics,

@@ -14,9 +14,11 @@
 
 extern crate ftdc;
 
+use std::io::stdout;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Output;
 use std::str::FromStr;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -81,6 +83,7 @@ enum Commands {
         #[arg(required = false, short, long)]
         output: Option<PathBuf>,
     },
+
     // Analyze timings of FTDC capture
     Timings {
         /// Input file
@@ -92,8 +95,19 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    // Stats
+    // Stats about FTDC files
     Stats {
+        /// Input file
+        #[arg(required = true, short, long)]
+        input: PathBuf,
+
+        /// Output file, stdout if not present
+        #[arg(required = false, short, long)]
+        output: Option<PathBuf>,
+    },
+
+    // Block Stats about Metric Chunks
+    BlockStats {
         /// Input file
         #[arg(required = true, short, long)]
         input: PathBuf,
@@ -212,9 +226,43 @@ fn format_doc(format: OutputFormat, doc: &Document, writer: &mut dyn Write) -> R
     Ok(())
 }
 
+fn convert_file(
+    rdr: &mut ftdc::BSONBlockReader,
+    format: OutputFormat,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let mut buf_writer = BufWriter::new(writer);
+
+    let mut scratch = Vec::<u8>::new();
+    scratch.reserve(1024 * 1024);
+
+    for item in rdr {
+        match item {
+            ftdc::RawBSONBlock::Metadata(doc) => {
+                format_doc(format, &doc, &mut buf_writer)?;
+            }
+            ftdc::RawBSONBlock::Metrics(doc) => {
+                let rdr = ftdc::MetricsReader::new(&doc)?;
+                for m_item in rdr.into_iter() {
+                    match m_item {
+                        MetricsDocument::Reference(d1) => {
+                            format_doc(format, &d1, &mut buf_writer)?;
+                        }
+                        MetricsDocument::Metrics(d1) => {
+                            format_doc(format, &d1, &mut buf_writer)?;
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Cli::parse();
-    println!("{:?}", args);
+    // println!("{:?}", args);
 
     match args.command {
         Commands::Convert {
@@ -222,37 +270,16 @@ fn main() -> Result<()> {
             format,
             output,
         } => {
-            let rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+            let mut rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
-            // TODO - add stdout support
-            let out_file = output.unwrap_or(PathBuf::from_str(&"test.out").unwrap());
-            let writer = File::open(out_file).unwrap();
-
-            let mut buf_writer = BufWriter::new(writer);
-
-            let mut scratch = Vec::<u8>::new();
-            scratch.reserve(1024 * 1024);
-
-            for item in rdr {
-                match item {
-                    ftdc::RawBSONBlock::Metadata(doc) => {
-                        format_doc(format, &doc, &mut buf_writer)?;
-                    }
-                    ftdc::RawBSONBlock::Metrics(doc) => {
-                        let rdr = ftdc::MetricsReader::new(&doc)?;
-                        for m_item in rdr.into_iter() {
-                            match m_item {
-                                MetricsDocument::Reference(d1) => {
-                                    format_doc(format, &d1, &mut buf_writer)?;
-                                }
-                                MetricsDocument::Metrics(d1) => {
-                                    format_doc(format, &d1, &mut buf_writer)?;
-                                }
-                            };
-                        }
-                    }
+            match output {
+                Some(f) => {
+                    convert_file(&mut rdr, format, &mut File::open(f)?)?;
                 }
-            }
+                None => {
+                    convert_file(&mut rdr, format, &mut stdout().lock())?;
+                }
+            };
         }
 
         Commands::Stats { input, output } => {
@@ -296,7 +323,32 @@ fn main() -> Result<()> {
                 blocks, metadata, reference_docs, metric_docs, total
             );
         }
-        
+
+        Commands::BlockStats { input, output } => {
+            let rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+
+            println!("Type, Chunk Size, Ref Size, Metrics, Samples");
+
+            for item in rdr {
+                match item {
+                    ftdc::RawBSONBlock::Metadata(doc) => {
+                        println!("Metadata, {}, {}, {}, {}", 0, 0, 0, 0);
+                    }
+                    ftdc::RawBSONBlock::Metrics(doc) => {
+                        let rdr = ftdc::MetricsReader::new(&doc)?;
+
+                        println!(
+                            "Metrics, {}, {}, {}, {}",
+                            rdr.decoded_block.chunk_size_bytes,
+                            rdr.decoded_block.ref_doc_size_bytes,
+                            rdr.decoded_block.metrics_count,
+                            rdr.decoded_block.sample_count
+                        );
+                    }
+                }
+            }
+        }
+
         Commands::Timings { input, output } => {
             let mut deltas = HashMap::<String, Vec<i64>>::new();
 
@@ -313,7 +365,7 @@ fn main() -> Result<()> {
                                     analyze_ref(&d1, &mut deltas)?;
                                 }
                                 MetricsDocument::Metrics(d1) => {
-                                    analyze_ref(&d1, &mut deltas)?;
+                                    analyze_doc(&d1, &mut deltas)?;
                                 }
                             };
                         }
