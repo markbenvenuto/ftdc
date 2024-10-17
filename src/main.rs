@@ -227,7 +227,7 @@ fn format_doc(format: OutputFormat, doc: &Document, writer: &mut dyn Write) -> R
 }
 
 fn convert_file(
-    rdr: &mut ftdc::BSONBlockReader,
+    rdr: &mut ftdc::BSONBlockReader<File>,
     format: OutputFormat,
     writer: &mut dyn Write,
 ) -> Result<()> {
