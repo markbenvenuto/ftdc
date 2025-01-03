@@ -14,6 +14,7 @@
 
 extern crate ftdc;
 
+use std::collections::BTreeSet;
 use std::io::stdout;
 use std::io::BufWriter;
 use std::io::Write;
@@ -25,6 +26,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use anyhow::Result;
 use bson::Document;
+use ftdc::extract_metrics;
+use ftdc::extract_metrics_paths;
+use ftdc::VectorMetricsDocument;
 use std::collections::HashMap;
 
 use std::fs::File;
@@ -62,6 +66,12 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
+enum FlatOutputFormat {
+    CSV,
+    Parquet,
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Decompress FTDC
@@ -78,6 +88,26 @@ enum Commands {
             default_value_t = OutputFormat::Json, value_enum
         )]
         format: OutputFormat,
+
+        /// Output file, stdout if not present
+        #[arg(required = false, short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Decompress FTDC
+    #[command(arg_required_else_help = true)]
+    ConvertFlat {
+        /// Input file
+        #[arg(required = true, short, long)]
+        input: PathBuf,
+
+        // Output format
+        #[arg(
+            short,
+            long,
+            default_value_t = FlatOutputFormat::CSV, value_enum
+        )]
+        format: FlatOutputFormat,
 
         /// Output file, stdout if not present
         #[arg(required = false, short, long)]
@@ -260,6 +290,122 @@ fn convert_file(
     Ok(())
 }
 
+
+const SENTINEL_VALUE : usize = 0xfff;
+
+fn write_row(metrics:&Vec<u64>, map_vec:&Vec<usize>, writer: &mut dyn Write) {
+    for (idx, &mapping) in map_vec.iter().enumerate() {
+        if mapping!= SENTINEL_VALUE {
+            write!(writer, "{},", metrics[mapping] );
+        } else {
+            writer.write(",".as_bytes());
+        }
+    }
+
+    writer.write("\n".as_bytes());
+}
+
+fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn Write) -> Result<()> {
+    let mut first_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+
+    let mut buf_writer = BufWriter::new(writer);
+
+    let mut scratch = Vec::<u8>::new();
+    scratch.reserve(1024 * 1024);
+
+    // TODO 
+    /*
+    1. Map paths to cols
+    2. Merge big list
+    3. Per section, map col to id
+    4. Gen CSV
+    5. Make raw metrics block reader
+     */
+    let mut path_set : BTreeSet<String> = BTreeSet::new();
+
+    // Get the list of columns across ALL blocks
+    for item in first_rdr {
+        match item {
+            ftdc::RawBSONBlock::Metadata(doc) => {
+                println!("Skipping metadata blocks")
+            }
+            ftdc::RawBSONBlock::Metrics(doc) => {
+                let rdr = ftdc::VectorMetricsReader::new(&doc)?;
+                for m_item in rdr.into_iter() {
+                    match m_item {
+                        VectorMetricsDocument::Reference(d1) => {
+                            let paths = extract_metrics_paths(&d1);
+                            let mut ps : BTreeSet<String> = paths.into_iter().map(|x| x.name).collect();
+                            path_set.append(&mut ps);
+                            break;
+                        }
+                        VectorMetricsDocument::Metrics(d1) => {
+                            panic!("Should not hit this");
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    // Make a map of name -> column #
+    let path_index : HashMap<String, usize> = path_set.into_iter().enumerate().map(|(x, y)| (y,x)).collect();
+
+    println!("Headers: {}", path_index.len());
+
+    let mut header_names : Vec<String> = path_index.iter().map(|x| x.0.clone()).collect();
+    header_names.push("ignore_trailer".into());
+    let header_names_comma = header_names.join(",");
+    // Make header
+    buf_writer.write(header_names_comma.as_bytes());
+    buf_writer.write("\n".as_bytes());
+
+    let mut second_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+
+    for item in second_rdr {
+        match item {
+            ftdc::RawBSONBlock::Metadata(doc) => {
+                // ignore
+            }
+            ftdc::RawBSONBlock::Metrics(doc) => {
+                let rdr = ftdc::VectorMetricsReader::new(&doc)?;
+
+                let mut col_list_map : Vec<usize> = vec![SENTINEL_VALUE; path_index.len()];
+
+                for m_item in rdr.into_iter() {
+                    match m_item {
+                        VectorMetricsDocument::Reference(d1) => {
+                            let paths = extract_metrics_paths(&d1);
+
+                            // list of col names
+                            let mut block_cols : Vec<String> = paths.into_iter().map(|x| x.name).collect();
+
+                            // block col name -> global col index
+                            let block_col_to_global_index : Vec<usize> = block_cols.iter().map( |x| path_index.get(x).expect("Corruption between first and second pass").clone() ).collect();
+
+                            for (local_block_index, &global_block_idx) in block_col_to_global_index.iter().enumerate() {
+                                col_list_map[global_block_idx] = local_block_index;
+                            }
+                            
+                            let metrics = extract_metrics(&d1);
+
+    println!("Block Headers: {}", block_cols.len());
+
+                            write_row(&metrics, &col_list_map, &mut buf_writer );
+                        }
+                        VectorMetricsDocument::Metrics(d1) => {
+                            write_row(&d1, &col_list_map, &mut buf_writer );
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+
 fn main() -> Result<()> {
     let args = Cli::parse();
     // println!("{:?}", args);
@@ -375,7 +521,20 @@ fn main() -> Result<()> {
 
             println!("Done");
         }
+        Commands::ConvertFlat { input, format, output } => 
+        {
+
+            match output {
+                Some(f) => {
+                    convert_flat_file(input, format, &mut File::create(f)?)?;
+                }
+                None => {
+                    convert_flat_file(input, format, &mut stdout().lock())?;
+                }
+            };
+        }
     }
 
     Ok(())
 }
+

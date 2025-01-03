@@ -455,29 +455,55 @@ fn concat3(a1: &str, a2: &str, a3: &str) -> String {
     s
 }
 
+pub enum MetricType {
+    Double,
+    Int64,
+    Int32,
+    Boolean,
+    DateTime,
+    Timestamp,
+}
+
+pub struct MetricTypeInfo {
+    pub name: String,
+    pub metric_type: MetricType,
+}
+
 fn extract_metrics_paths_bson_int(
     value: &(&String, &Bson),
     prefix: &str,
-    metrics: &mut Vec<String>,
+    metrics: &mut Vec<MetricTypeInfo>,
 ) {
     let prefix_dot_str = prefix.to_string() + ".";
     let prefix_dot = prefix_dot_str.as_str();
     let name = &value.0;
     match value.1 {
-        &Bson::Double(_)
-        | &Bson::Int64(_)
-        | &Bson::Int32(_)
-        | &Bson::Boolean(_)
-        | &Bson::DateTime(_) => {
+        &Bson::Double(_) => {
             let a1 = concat2(prefix_dot, name.as_str());
-            metrics.push(a1);
+            metrics.push(MetricTypeInfo{ name: a1, metric_type: MetricType::Double});
+        }
+        &Bson::Int64(_) => {
+            let a1 = concat2(prefix_dot, name.as_str());
+            metrics.push(MetricTypeInfo{ name: a1, metric_type: MetricType::Int64});
+        }
+        &Bson::Int32(_) => {
+            let a1 = concat2(prefix_dot, name.as_str());
+            metrics.push(MetricTypeInfo{ name: a1, metric_type: MetricType::Int32});
+        }
+        &Bson::Boolean(_) => {
+            let a1 = concat2(prefix_dot, name.as_str());
+            metrics.push(MetricTypeInfo{ name: a1, metric_type: MetricType::Boolean});
+        }
+        &Bson::DateTime(_) => {
+            let a1 = concat2(prefix_dot, name.as_str());
+            metrics.push(MetricTypeInfo{ name: a1, metric_type: MetricType::DateTime});
         }
         &Bson::Decimal128(_) => {
             panic!("Decimal128 not implemented")
         }
         &Bson::Timestamp(_) => {
-            metrics.push(concat3(prefix_dot, name.as_str(), "t"));
-            metrics.push(concat3(prefix_dot, name.as_str(), "i"));
+            metrics.push(MetricTypeInfo{ name: concat3(prefix_dot, name.as_str(), "t"), metric_type: MetricType::Timestamp});
+            metrics.push(MetricTypeInfo{ name: concat3(prefix_dot, name.as_str(), "i"), metric_type: MetricType::Timestamp});
         }
         Bson::Document(o) => {
             extract_metrics_paths_int(o, concat2(prefix_dot, name.as_str()).as_str(), metrics);
@@ -503,14 +529,14 @@ fn extract_metrics_paths_bson_int(
     }
 }
 
-fn extract_metrics_paths_int(doc: &Document, prefix: &str, metrics: &mut Vec<String>) {
+fn extract_metrics_paths_int(doc: &Document, prefix: &str, metrics: &mut Vec<MetricTypeInfo>) {
     for item in doc {
         extract_metrics_paths_bson_int(&item, prefix, metrics);
     }
 }
 
-pub fn extract_metrics_paths(doc: &Document) -> Vec<String> {
-    let mut metrics: Vec<String> = Vec::new();
+pub fn extract_metrics_paths(doc: &Document) -> Vec<MetricTypeInfo> {
+    let mut metrics: Vec<MetricTypeInfo> = Vec::new();
     extract_metrics_paths_int(doc, "", &mut metrics);
     metrics
 }
@@ -613,6 +639,13 @@ pub enum MetricsDocument {
 enum MetricState {
     Reference,
     Metrics,
+}
+
+// TODO - use lifetime to avoid copy of vec
+#[derive(Debug)]
+pub enum VectorMetricsDocument {
+    Reference(Rc<Document>),
+    Metrics(Vec<u64>),
 }
 
 pub struct DecodedMetricBlock {
@@ -799,6 +832,66 @@ impl<'a> Iterator for MetricsReader<'a> {
 
                 let d = fill_document(&self.decoded_block.ref_doc, &&self.scratch);
                 Some(MetricsDocument::Metrics(d))
+            }
+        }
+    }
+}
+
+
+pub struct VectorMetricsReader<'a> {
+    doc: &'a Document,
+    pub decoded_block: DecodedMetricBlock,
+
+    it_state: MetricState,
+    sample: i32,
+    scratch: Vec<u64>,
+}
+
+impl<'a> VectorMetricsReader<'a> {
+    pub fn new<'b>(doc: &'b Document) -> Result<VectorMetricsReader<'b>> {
+        let db = decode_metric_block(doc)?;
+        let mut s = Vec::new();
+        s.resize(db.metrics_count as usize, 0);
+
+        Ok(VectorMetricsReader {
+            doc: doc,
+            decoded_block: db,
+            it_state: MetricState::Reference,
+            sample: 0,
+            scratch: s,
+        })
+    }
+
+    pub fn get_metrics_count(&self) -> usize {
+        self.scratch.len()
+    }
+}
+
+impl<'a> Iterator for VectorMetricsReader<'a> {
+    type Item = VectorMetricsDocument;
+
+    fn next(&mut self) -> Option<VectorMetricsDocument> {
+        match self.it_state {
+            MetricState::Reference => {
+                self.it_state = MetricState::Metrics;
+
+                Some(VectorMetricsDocument::Reference(
+                    self.decoded_block.ref_doc.clone(),
+                ))
+            }
+            MetricState::Metrics => {
+                if self.sample == self.decoded_block.sample_count {
+                    return None;
+                }
+
+                self.sample += 1;
+
+                for i in 0..self.decoded_block.metrics_count {
+                    self.scratch[i as usize] = self.decoded_block.raw_metrics
+                        [get_array_offset(self.decoded_block.sample_count, self.sample - 1, i)];
+                }
+
+                Some(VectorMetricsDocument::Metrics(self.scratch.clone()))
             }
         }
     }
