@@ -774,6 +774,7 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
     })
 }
 
+// TODO - make this a wrapper around VectorMetricsReader
 pub struct MetricsReader<'a> {
     doc: &'a Document,
     pub decoded_block: DecodedMetricBlock,

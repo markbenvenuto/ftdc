@@ -298,11 +298,11 @@ fn write_row(metrics:&Vec<u64>, map_vec:&Vec<usize>, writer: &mut dyn Write) {
         if mapping!= SENTINEL_VALUE {
             write!(writer, "{},", metrics[mapping] );
         } else {
-            writer.write(",".as_bytes());
+            writer.write("0,".as_bytes());
         }
     }
 
-    writer.write("\n".as_bytes());
+    writer.write("0\n".as_bytes());
 }
 
 fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn Write) -> Result<()> {
@@ -313,14 +313,6 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
     let mut scratch = Vec::<u8>::new();
     scratch.reserve(1024 * 1024);
 
-    // TODO 
-    /*
-    1. Map paths to cols
-    2. Merge big list
-    3. Per section, map col to id
-    4. Gen CSV
-    5. Make raw metrics block reader
-     */
     let mut path_set : BTreeSet<String> = BTreeSet::new();
 
     // Get the list of columns across ALL blocks
@@ -349,14 +341,23 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
     }
 
     // Make a map of name -> column #
-    let path_index : HashMap<String, usize> = path_set.into_iter().enumerate().map(|(x, y)| (y,x)).collect();
+    let mut header_names : Vec<String> = path_set.iter().map(|(x)| x.clone() ).collect();
+    header_names.sort();
 
-    println!("Headers: {}", path_index.len());
-
-    let mut header_names : Vec<String> = path_index.iter().map(|x| x.0.clone()).collect();
+    // Be lazy so I don't have to track the first or last comma
     header_names.push("ignore_trailer".into());
+
+    for hn in &header_names {
+        if hn.contains(",") {
+            panic!("Header name has a comma which is not escaped {}", hn);
+        }
+    }
+
+    let path_index : HashMap<&String, usize> = header_names.iter().enumerate().map(|(x, y)| (y,x)).collect();
+
     let header_names_comma = header_names.join(",");
-    // Make header
+
+    // Make csv header
     buf_writer.write(header_names_comma.as_bytes());
     buf_writer.write("\n".as_bytes());
 
@@ -388,9 +389,7 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
                             }
                             
                             let metrics = extract_metrics(&d1);
-
-    println!("Block Headers: {}", block_cols.len());
-
+ 
                             write_row(&metrics, &col_list_map, &mut buf_writer );
                         }
                         VectorMetricsDocument::Metrics(d1) => {
@@ -420,7 +419,7 @@ fn main() -> Result<()> {
 
             match output {
                 Some(f) => {
-                    convert_file(&mut rdr, format, &mut File::open(f)?)?;
+                    convert_file(&mut rdr, format, &mut File::create(f)?)?;
                 }
                 None => {
                     convert_file(&mut rdr, format, &mut stdout().lock())?;
@@ -523,7 +522,6 @@ fn main() -> Result<()> {
         }
         Commands::ConvertFlat { input, format, output } => 
         {
-
             match output {
                 Some(f) => {
                     convert_flat_file(input, format, &mut File::create(f)?)?;
