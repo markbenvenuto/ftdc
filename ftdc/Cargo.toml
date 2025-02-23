@@ -1,6 +1,6 @@
 [package]
 name = "ftdc"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -8,12 +8,12 @@ license = "Apache-2.0"
 [dependencies]
 anyhow = "1.0.79"
 assert_ok = "1.0.2"
-bson = { version= "2.11.0", features=["chrono-0_4"]}
+bson = { version = "2.13.0", features = ["chrono-0_4"] }
 byteorder = "1.5.0"
 bytes = "1.7.1"
 chrono = "0.4.31"
 libflate = "2.1.0"
-serde_json = "1.0.127"
+serde_json = "1.0.139"
 streaming-iterator = "0.1.9"
 varinteger = "1.0.6"
 

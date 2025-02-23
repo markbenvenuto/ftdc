@@ -19,8 +19,6 @@ use std::io::stdout;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Output;
-use std::str::FromStr;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -28,12 +26,18 @@ use anyhow::Result;
 use bson::Document;
 use ftdc::extract_metrics;
 use ftdc::extract_metrics_paths;
+use ftdc::MetricsDocument;
 use ftdc::VectorMetricsDocument;
 use std::collections::HashMap;
 
 use std::fs::File;
 
-use crate::ftdc::MetricsDocument;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 /**
  * TODO:
@@ -119,10 +123,9 @@ enum Commands {
         /// Input file
         #[arg(required = true, short, long)]
         input: PathBuf,
-
-        /// Output file, stdout if not present
-        #[arg(required = false, short, long)]
-        output: Option<PathBuf>,
+        // /// Output file, stdout if not present
+        // #[arg(required = false, short, long)]
+        // output: Option<PathBuf>,
     },
 
     // Stats about FTDC files
@@ -130,10 +133,9 @@ enum Commands {
         /// Input file
         #[arg(required = true, short, long)]
         input: PathBuf,
-
-        /// Output file, stdout if not present
-        #[arg(required = false, short, long)]
-        output: Option<PathBuf>,
+        // /// Output file, stdout if not present
+        // #[arg(required = false, short, long)]
+        // output: Option<PathBuf>,
     },
 
     // Block Stats about Metric Chunks
@@ -141,10 +143,9 @@ enum Commands {
         /// Input file
         #[arg(required = true, short, long)]
         input: PathBuf,
-
-        /// Output file, stdout if not present
-        #[arg(required = false, short, long)]
-        output: Option<PathBuf>,
+        // /// Output file, stdout if not present
+        // #[arg(required = false, short, long)]
+        // output: Option<PathBuf>,
     },
 }
 
@@ -290,35 +291,49 @@ fn convert_file(
     Ok(())
 }
 
+const SENTINEL_VALUE: usize = 0xffffffff;
 
-const SENTINEL_VALUE : usize = 0xfff;
+// fn count_commas(input: &str) -> usize {
+//     input.chars().filter(|c| *c == ',').count()
+// }
 
-fn write_row(metrics:&Vec<u64>, map_vec:&Vec<usize>, writer: &mut dyn Write) {
-    for (idx, &mapping) in map_vec.iter().enumerate() {
-        if mapping!= SENTINEL_VALUE {
-            write!(writer, "{},", metrics[mapping] );
+fn write_row(metrics: &Vec<u64>, map_vec: &Vec<usize>, writer: &mut dyn Write) -> Result<()> {
+    // let mut s = String::new();
+    for (_, &mapping) in map_vec.iter().enumerate() {
+        if mapping != SENTINEL_VALUE {
+            write!(writer, "{},", metrics[mapping])?;
+            // s.push_str(&format!("{},", metrics[mapping] ));
         } else {
-            writer.write("0,".as_bytes());
+            writer.write("0,".as_bytes())?;
+            // s.push_str("0,");
         }
     }
 
-    writer.write("0\n".as_bytes());
+    // println!("Commas2 {}", count_commas(&s));
+
+    writer.write("0\n".as_bytes())?;
+
+    Ok(())
 }
 
-fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn Write) -> Result<()> {
-    let mut first_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+fn convert_flat_file(
+    input: PathBuf,
+    _format: FlatOutputFormat,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let first_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
     let mut buf_writer = BufWriter::new(writer);
 
     let mut scratch = Vec::<u8>::new();
     scratch.reserve(1024 * 1024);
 
-    let mut path_set : BTreeSet<String> = BTreeSet::new();
+    let mut path_set: BTreeSet<String> = BTreeSet::new();
 
     // Get the list of columns across ALL blocks
     for item in first_rdr {
         match item {
-            ftdc::RawBSONBlock::Metadata(doc) => {
+            ftdc::RawBSONBlock::Metadata(_) => {
                 println!("Skipping metadata blocks")
             }
             ftdc::RawBSONBlock::Metrics(doc) => {
@@ -327,11 +342,24 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
                     match m_item {
                         VectorMetricsDocument::Reference(d1) => {
                             let paths = extract_metrics_paths(&d1);
-                            let mut ps : BTreeSet<String> = paths.into_iter().map(|x| x.name).collect();
+
+                            let mut dups: BTreeSet<String> = BTreeSet::new();
+
+                            for p in paths.iter() {
+                                if !dups.insert(p.name.clone()) {
+                                    println!("Duplicate: {}", p.name);
+                                }
+                            }
+                            // println!("Paths1: {}", paths.len());
+                            let mut ps: BTreeSet<String> =
+                                paths.into_iter().map(|x| x.name).collect();
+                            // println!("Paths1s: {}", ps.len());
+
                             path_set.append(&mut ps);
+
                             break;
                         }
-                        VectorMetricsDocument::Metrics(d1) => {
+                        VectorMetricsDocument::Metrics(_) => {
                             panic!("Should not hit this");
                         }
                     };
@@ -341,11 +369,22 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
     }
 
     // Make a map of name -> column #
-    let mut header_names : Vec<String> = path_set.iter().map(|(x)| x.clone() ).collect();
+    let mut header_names: Vec<String> = path_set
+        .iter()
+        .map(|x| x.clone().replace(",", ""))
+        .collect();
     header_names.sort();
+
+    let path_index: HashMap<String, usize> = header_names
+        .iter()
+        .enumerate()
+        .map(|(x, y)| (y.clone(), x))
+        .collect();
 
     // Be lazy so I don't have to track the first or last comma
     header_names.push("ignore_trailer".into());
+
+    // println!("Paths: {}", header_names.len());
 
     for hn in &header_names {
         if hn.contains(",") {
@@ -353,47 +392,59 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
         }
     }
 
-    let path_index : HashMap<&String, usize> = header_names.iter().enumerate().map(|(x, y)| (y,x)).collect();
-
     let header_names_comma = header_names.join(",");
 
-    // Make csv header
-    buf_writer.write(header_names_comma.as_bytes());
-    buf_writer.write("\n".as_bytes());
+    // println!("Commas {}", count_commas(&header_names_comma));
 
-    let mut second_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
+    // Make csv header
+    buf_writer.write(header_names_comma.as_bytes())?;
+    buf_writer.write("\n".as_bytes())?;
+
+    let second_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
     for item in second_rdr {
         match item {
-            ftdc::RawBSONBlock::Metadata(doc) => {
+            ftdc::RawBSONBlock::Metadata(_) => {
                 // ignore
             }
             ftdc::RawBSONBlock::Metrics(doc) => {
                 let rdr = ftdc::VectorMetricsReader::new(&doc)?;
 
-                let mut col_list_map : Vec<usize> = vec![SENTINEL_VALUE; path_index.len()];
+                let mut col_list_map: Vec<usize> = vec![SENTINEL_VALUE; path_index.len()];
 
                 for m_item in rdr.into_iter() {
                     match m_item {
                         VectorMetricsDocument::Reference(d1) => {
                             let paths = extract_metrics_paths(&d1);
 
+                            println!("Paths: {}", paths.len());
                             // list of col names
-                            let mut block_cols : Vec<String> = paths.into_iter().map(|x| x.name).collect();
+                            let block_cols: Vec<String> =
+                                paths.into_iter().map(|x| x.name.replace(",", "")).collect();
 
                             // block col name -> global col index
-                            let block_col_to_global_index : Vec<usize> = block_cols.iter().map( |x| path_index.get(x).expect("Corruption between first and second pass").clone() ).collect();
+                            let block_col_to_global_index: Vec<usize> = block_cols
+                                .iter()
+                                .map(|x| {
+                                    path_index
+                                        .get(x)
+                                        .expect("Corruption between first and second pass")
+                                        .clone()
+                                })
+                                .collect();
 
-                            for (local_block_index, &global_block_idx) in block_col_to_global_index.iter().enumerate() {
+                            for (local_block_index, &global_block_idx) in
+                                block_col_to_global_index.iter().enumerate()
+                            {
                                 col_list_map[global_block_idx] = local_block_index;
                             }
-                            
+
                             let metrics = extract_metrics(&d1);
- 
-                            write_row(&metrics, &col_list_map, &mut buf_writer );
+
+                            write_row(&metrics, &col_list_map, &mut buf_writer)?;
                         }
                         VectorMetricsDocument::Metrics(d1) => {
-                            write_row(&d1, &col_list_map, &mut buf_writer );
+                            write_row(&d1, &col_list_map, &mut buf_writer)?;
                         }
                     };
                 }
@@ -403,7 +454,6 @@ fn convert_flat_file(input: PathBuf, format: FlatOutputFormat, writer: &mut dyn 
 
     Ok(())
 }
-
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -427,7 +477,7 @@ fn main() -> Result<()> {
             };
         }
 
-        Commands::Stats { input, output } => {
+        Commands::Stats { input } => {
             let mut total = 0;
             let mut blocks = 0;
             let mut metadata = 0;
@@ -469,14 +519,14 @@ fn main() -> Result<()> {
             );
         }
 
-        Commands::BlockStats { input, output } => {
+        Commands::BlockStats { input } => {
             let rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
             println!("Type, Chunk Size, Ref Size, Metrics, Samples");
 
             for item in rdr {
                 match item {
-                    ftdc::RawBSONBlock::Metadata(doc) => {
+                    ftdc::RawBSONBlock::Metadata(_) => {
                         println!("Metadata, {}, {}, {}, {}", 0, 0, 0, 0);
                     }
                     ftdc::RawBSONBlock::Metrics(doc) => {
@@ -494,7 +544,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Timings { input, output } => {
+        Commands::Timings { input } => {
             let mut deltas = HashMap::<String, Vec<i64>>::new();
 
             let rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
@@ -520,8 +570,11 @@ fn main() -> Result<()> {
 
             println!("Done");
         }
-        Commands::ConvertFlat { input, format, output } => 
-        {
+        Commands::ConvertFlat {
+            input,
+            format,
+            output,
+        } => {
             match output {
                 Some(f) => {
                     convert_flat_file(input, format, &mut File::create(f)?)?;
@@ -535,4 +588,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-

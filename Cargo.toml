@@ -1,30 +1,28 @@
 [package]
 name = "cli"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2021"
 license = "Apache-2.0"
 
 [workspace]
-members = [
-    "ftdc",
-]
+members = ["ftdc"]
 
 [dependencies]
-ftdc = {path="ftdc"}
+ftdc = { path = "ftdc" }
 
-bson = { version= "2.8.1"}
-indicatif = "0.17.7"
-anyhow = "1.0.79"
+bson = { version = "2.13.0" }
+# indicatif = "0.17.11"
+anyhow = "1.0.96"
 
 #chrono = "0.4.31"
-streaming-iterator = "0.1.9"
+# streaming-iterator = "0.1.9"
 
-serde_json = "1.0.127"
-clap = { version = "4.4.18", features = ["derive"] }
+serde_json = "1.0.139"
+clap = { version = "4.5.30", features = ["derive"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-jemallocator = "0.5.4"
+tikv-jemallocator = "0.6"
 
 [profile.release]
 debug = true
