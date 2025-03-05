@@ -66,25 +66,36 @@ mod test {
     use bson::doc;
     use bson::spec::BinarySubtype;
     use bytes::BufMut;
+    use chrono::{TimeZone, Utc};
 
     #[test]
     fn test_roundtrip_compressor() {
         let mut writer = BSONMetricsCompressor::new(3);
 
+        let date = Utc.timestamp_nanos(42);
+
         assert_eq!(
-            writer.add_doc(&doc! {"a": 1, "x" : 2, "s" : "t"}).unwrap(),
+            writer
+                .add_doc(&doc! {"a": 1, "x" : 2, "s" : "t"}, date)
+                .unwrap(),
             AddResult::NewBlock(None)
         );
         assert_eq!(
-            writer.add_doc(&doc! {"a": 2, "x" : 2, "s" : "t"}).unwrap(),
+            writer
+                .add_doc(&doc! {"a": 2, "x" : 2, "s" : "t"}, date)
+                .unwrap(),
             AddResult::ExistingBlock
         );
         assert_eq!(
-            writer.add_doc(&doc! {"a": 3, "x" : 2, "s" : "t"}).unwrap(),
+            writer
+                .add_doc(&doc! {"a": 3, "x" : 2, "s" : "t"}, date)
+                .unwrap(),
             AddResult::ExistingBlock
         );
 
-        let addresult = writer.add_doc(&doc! {"a": 7, "x" : 9, "s" : "t"}).unwrap();
+        let addresult = writer
+            .add_doc(&doc! {"a": 7, "x" : 9, "s" : "t"}, date)
+            .unwrap();
 
         assert_ne!(addresult, AddResult::ExistingBlock);
 
@@ -93,7 +104,7 @@ mod test {
                 assert!(false);
             }
             AddResult::NewBlock(met_opt) => {
-                let met = met_opt.unwrap();
+                let (met, date) = met_opt.unwrap();
 
                 /*
                 let mut rdr = BSONBlockReader::new_reader(Cursor::new(met)).unwrap();
@@ -121,9 +132,10 @@ mod test {
 
         let mut writer = BSONBlockWriter::new_bytes(&mut buf, 3).unwrap();
 
-        assert_ok!(writer.add_sample(&doc! {"a": 1, "x" : 2, "s" : "t"}));
-        assert_ok!(writer.add_sample(&doc! {"a": 2, "x" : 2, "s" : "t"}));
-        assert_ok!(writer.add_sample(&doc! {"a": 3, "x" : 2, "s" : "t"}));
+        let date = Utc.timestamp_nanos(42);
+        assert_ok!(writer.add_sample(&doc! {"a": 1, "x" : 2, "s" : "t"}, date));
+        assert_ok!(writer.add_sample(&doc! {"a": 2, "x" : 2, "s" : "t"}, date));
+        assert_ok!(writer.add_sample(&doc! {"a": 3, "x" : 2, "s" : "t"}, date));
 
         //et addresult = writer.add_doc(&doc! {"a": 7, "x" : 9, "s" : "t"}).unwrap();
     }

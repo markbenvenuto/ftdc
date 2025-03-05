@@ -16,13 +16,15 @@ extern crate ftdc;
 
 use std::collections::BTreeSet;
 use std::io::stdout;
+use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
-use std::io::BufRead;
 use std::path::PathBuf;
 
 use bson::to_document;
+use chrono::TimeZone;
+use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use anyhow::Result;
@@ -521,22 +523,19 @@ fn convert_prom_file(input: PathBuf, output: PathBuf) -> Result<()> {
             }
 
             if last_timestamp != record.timestamp {
-                // flush
-                //
-
                 records.sort_by(|a, b| a.0.cmp(&b.0));
 
                 let samples: IndexMap<String, f64> = records.iter().cloned().collect();
 
+                let start = Utc.timestamp_millis_opt(last_timestamp).unwrap();
+
                 let doc = bson::doc![
-                    "start" : last_timestamp,
-                   "serverStatus": to_document(&samples).expect("Expect conversion to bson for metrics never fails"),
-                   "end" : last_timestamp,
+                    "start" : start,
+                    "serverStatus" : to_document(&samples).expect("Expect conversion to bson for metrics never fails"),
+                    "end" : start,
                 ];
 
-                // println!("{:#?}", doc);
-
-                writer.add_sample(&doc)?;
+                writer.add_sample(&doc, start)?;
 
                 records.clear();
                 last_timestamp = record.timestamp;

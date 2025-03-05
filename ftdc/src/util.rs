@@ -2,18 +2,20 @@ use bson::doc;
 use bson::spec::BinarySubtype;
 use bson::Bson;
 use bson::Document;
+use chrono::DateTime;
+use chrono::Utc;
 
-pub(crate) fn gen_metadata_document(doc: &Document) -> Document {
+pub(crate) fn gen_metadata_document(doc: &Document, date: DateTime<Utc>) -> Document {
     doc! {
-        "_id" : chrono::Utc::now(),
+        "_id" : date,
         "type": 0,
         "doc" : doc
     }
 }
 
-pub(crate) fn gen_metrics_document(chunk: &[u8]) -> Document {
+pub(crate) fn gen_metrics_document(chunk: &[u8], date: DateTime<Utc>) -> Document {
     doc! {
-        "_id" : chrono::Utc::now(),
+        "_id" : date,
         "type": 1,
         "data" : bson::binary::Binary{ subtype: BinarySubtype::Generic, bytes: chunk.to_vec() }
     }

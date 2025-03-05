@@ -23,6 +23,9 @@ use anyhow::Result;
 use bson::Bson;
 use bson::Document;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use chrono::DateTime;
+use chrono::TimeZone;
+use chrono::Utc;
 use libflate::zlib::Encoder;
 use std::io::Cursor;
 
@@ -40,12 +43,12 @@ pub struct BSONMetricsCompressor {
     metric_vec: Vec<Vec<u64>>,
     ref_doc: Document,
     ref_doc_vec: Vec<u64>,
-    // blocks : Vec<Vec<u8>>,
+    ref_date: DateTime<Utc>, // blocks : Vec<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum AddResult {
-    NewBlock(Option<Vec<u8>>),
+    NewBlock(Option<(Vec<u8>, DateTime<Utc>)>),
     ExistingBlock,
 }
 
@@ -60,18 +63,19 @@ impl BSONMetricsCompressor {
             metric_vec: Vec::new(),
             ref_doc: Document::new(),
             ref_doc_vec: Vec::new(),
-            // blocks: Vec::new()
+            ref_date: Utc.timestamp_nanos(0),
         }
     }
 
     // TODO - report if new block was started
-    pub fn add_doc(&mut self, doc: &Document) -> Result<AddResult> {
+    pub fn add_doc(&mut self, doc: &Document, date: DateTime<Utc>) -> Result<AddResult> {
         let mut met_vec = Vec::new();
         extract_metrics_int(doc, &mut met_vec);
 
         // first document
         if self.ref_doc.is_empty() {
             self.ref_doc = doc.clone();
+            self.ref_date = date;
 
             self.metric_vec.clear();
             self.metrics = met_vec.len();
@@ -93,22 +97,23 @@ impl BSONMetricsCompressor {
             let block = self.flush_block()?;
 
             self.ref_doc = doc.clone();
+            self.ref_date = date;
 
             self.metric_vec.clear();
             self.metrics = met_vec.len();
 
             self.ref_doc_vec = met_vec;
 
-            Ok(AddResult::NewBlock(Some(block)))
+            Ok(AddResult::NewBlock(Some((block, date))))
         }
     }
 
-    fn flush(&mut self) -> Result<Option<Vec<u8>>> {
+    fn flush(&mut self) -> Result<Option<(Vec<u8>, DateTime<Utc>)>> {
         if self.metric_vec.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(self.flush_block()?))
+        Ok(Some((self.flush_block()?, self.ref_date)))
     }
 
     // Compress Metric Vectors
@@ -127,7 +132,8 @@ impl BSONMetricsCompressor {
 
         for s in (1..sample_count).rev() {
             for m in 0..metric_count {
-                self.metric_vec[s][m] = self.metric_vec[s][m].wrapping_sub(self.metric_vec[s - 1][m]);
+                self.metric_vec[s][m] =
+                    self.metric_vec[s][m].wrapping_sub(self.metric_vec[s - 1][m]);
             }
         }
         // eprintln!("ccc: {:?}", self.metric_vec);
@@ -260,22 +266,22 @@ fn write_doc_to_writer(writer: &mut dyn Write, doc: &Document) -> Result<()> {
 
 // TODO - reduce copies by using raw bson api?
 impl<W: Write> BSONBlockWriter<W> {
-    pub fn add_metdata_doc(&mut self, doc: &Document) -> Result<()> {
-        let md_doc = gen_metadata_document(doc);
+    pub fn add_metdata_doc(&mut self, doc: &Document, date: DateTime<Utc>) -> Result<()> {
+        let md_doc = gen_metadata_document(doc, date);
 
         write_doc_to_writer(&mut self.writer, &md_doc)
     }
 
-    pub fn add_sample(&mut self, doc: &Document) -> Result<()> {
-        let result = self.compressor.add_doc(doc)?;
+    pub fn add_sample(&mut self, doc: &Document, sample_date: DateTime<Utc>) -> Result<()> {
+        let result = self.compressor.add_doc(doc, sample_date)?;
 
         match result {
             AddResult::ExistingBlock => {
                 // Do Nothing
             }
             AddResult::NewBlock(block_opt) => {
-                if let Some(block) = block_opt {
-                    let metric_doc = gen_metrics_document(&block);
+                if let Some((block, date)) = block_opt {
+                    let metric_doc = gen_metrics_document(&block, date);
 
                     write_doc_to_writer(&mut self.writer, &metric_doc)?
                 }
@@ -286,8 +292,8 @@ impl<W: Write> BSONBlockWriter<W> {
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        if let Some(block) = self.compressor.flush()? {
-            let metric_doc = gen_metrics_document(&block);
+        if let Some((block, date)) = self.compressor.flush()? {
+            let metric_doc = gen_metrics_document(&block, date);
 
             write_doc_to_writer(&mut self.writer, &metric_doc)?
         }

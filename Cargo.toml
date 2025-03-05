@@ -15,7 +15,7 @@ bson = { version = "2.13.0" }
 # indicatif = "0.17.11"
 anyhow = "1.0.96"
 
-#chrono = "0.4.31"
+chrono = "0.4.40"
 # streaming-iterator = "0.1.9"
 
 serde_json = "1.0.139"
