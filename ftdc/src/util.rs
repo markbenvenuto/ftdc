@@ -15,7 +15,7 @@ pub(crate) fn gen_metrics_document(chunk: &[u8]) -> Document {
     doc! {
         "_id" : chrono::Utc::now(),
         "type": 1,
-        "doc" : bson::binary::Binary{ subtype: BinarySubtype::Generic, bytes: chunk.to_vec() }
+        "data" : bson::binary::Binary{ subtype: BinarySubtype::Generic, bytes: chunk.to_vec() }
     }
 }
 

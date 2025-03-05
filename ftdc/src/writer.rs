@@ -17,6 +17,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use bson::Bson;
@@ -96,16 +97,29 @@ impl BSONMetricsCompressor {
             self.metric_vec.clear();
             self.metrics = met_vec.len();
 
+            self.ref_doc_vec = met_vec;
+
             Ok(AddResult::NewBlock(Some(block)))
         }
     }
 
+    fn flush(&mut self) -> Result<Option<Vec<u8>>> {
+        if self.metric_vec.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(self.flush_block()?))
+    }
+
     // Compress Metric Vectors
     fn compress_metric_vec(&mut self) -> Vec<u8> {
-        assert!(!self.metric_vec.is_empty());
+        if self.metric_vec.is_empty() {
+            return Vec::new();
+        }
+        // assert!(!self.metric_vec.is_empty());
 
-        eprintln!("rdv: {:?}", self.ref_doc_vec);
-        eprintln!("ccc: {:?}", self.metric_vec);
+        // eprintln!("rdv: {:?}", self.ref_doc_vec);
+        // eprintln!("ccc: {:?}", self.metric_vec);
 
         // Do delta calculations
         let metric_count = self.ref_doc_vec.len();
@@ -113,13 +127,13 @@ impl BSONMetricsCompressor {
 
         for s in (1..sample_count).rev() {
             for m in 0..metric_count {
-                self.metric_vec[s][m] -= self.metric_vec[s - 1][m];
+                self.metric_vec[s][m] = self.metric_vec[s][m].wrapping_sub(self.metric_vec[s - 1][m]);
             }
         }
         // eprintln!("ccc: {:?}", self.metric_vec);
 
         for m in 0..metric_count {
-            self.metric_vec[0][m] -= self.ref_doc_vec[m];
+            self.metric_vec[0][m] = self.metric_vec[0][m].wrapping_sub(self.ref_doc_vec[m]);
         }
 
         // eprintln!("ccc: {:?}", self.metric_vec);
@@ -144,7 +158,6 @@ impl BSONMetricsCompressor {
                         offset += write_size;
 
                         count_zeros = 0;
-                        continue;
                     }
 
                     let write_size = varinteger::encode_with_offset(v, &mut out, offset);
@@ -156,7 +169,7 @@ impl BSONMetricsCompressor {
         }
 
         if count_zeros > 0 {
-            eprintln!("cz: {:?}", count_zeros);
+            // eprintln!("cz: {:?}", count_zeros);
 
             let write_size = varinteger::encode_with_offset(0, &mut out, offset);
             offset += write_size;
@@ -215,8 +228,8 @@ pub struct BSONBlockWriter<W: Write> {
 }
 
 impl BSONBlockWriter<File> {
-    pub fn new_file(file_name: &str, max_samples: usize) -> Result<BSONBlockWriter<File>> {
-        let ff = File::open(file_name)?;
+    pub fn new_file(file_name: &PathBuf, max_samples: usize) -> Result<BSONBlockWriter<File>> {
+        let ff = File::create(file_name)?;
 
         Ok(BSONBlockWriter {
             writer: BufWriter::new(ff),
@@ -267,6 +280,16 @@ impl<W: Write> BSONBlockWriter<W> {
                     write_doc_to_writer(&mut self.writer, &metric_doc)?
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        if let Some(block) = self.compressor.flush()? {
+            let metric_doc = gen_metrics_document(&block);
+
+            write_doc_to_writer(&mut self.writer, &metric_doc)?
         }
 
         Ok(())

@@ -16,18 +16,23 @@ extern crate ftdc;
 
 use std::collections::BTreeSet;
 use std::io::stdout;
+use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
+use std::io::BufRead;
 use std::path::PathBuf;
 
+use bson::to_document;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use anyhow::Result;
 use bson::Document;
 use ftdc::extract_metrics;
 use ftdc::extract_metrics_paths;
+use ftdc::writer::BSONBlockWriter;
 use ftdc::MetricsDocument;
 use ftdc::VectorMetricsDocument;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use std::fs::File;
@@ -78,7 +83,7 @@ enum FlatOutputFormat {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Decompress FTDC
+    /// Decompress FTDC to JSON
     #[command(arg_required_else_help = true)]
     Convert {
         /// Input file
@@ -98,7 +103,7 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Decompress FTDC
+    /// Decompress FTDC to CSV or Parquet
     #[command(arg_required_else_help = true)]
     ConvertFlat {
         /// Input file
@@ -118,7 +123,7 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    // Analyze timings of FTDC capture
+    /// Analyze timings of FTDC capture
     Timings {
         /// Input file
         #[arg(required = true, short, long)]
@@ -128,7 +133,7 @@ enum Commands {
         // output: Option<PathBuf>,
     },
 
-    // Stats about FTDC files
+    /// Stats about FTDC files
     Stats {
         /// Input file
         #[arg(required = true, short, long)]
@@ -138,7 +143,7 @@ enum Commands {
         // output: Option<PathBuf>,
     },
 
-    // Block Stats about Metric Chunks
+    /// Block Stats about Metric Chunks
     BlockStats {
         /// Input file
         #[arg(required = true, short, long)]
@@ -146,6 +151,18 @@ enum Commands {
         // /// Output file, stdout if not present
         // #[arg(required = false, short, long)]
         // output: Option<PathBuf>,
+    },
+
+    /// Convert Prometheus exposition format file to FTDC
+    #[command(arg_required_else_help = true)]
+    ConvertProm {
+        /// Input file
+        #[arg(required = true, short, long)]
+        input: PathBuf,
+
+        /// Output file
+        #[arg(required = false, short, long)]
+        output: PathBuf,
     },
 }
 
@@ -455,6 +472,83 @@ fn convert_flat_file(
     Ok(())
 }
 
+#[derive(Debug)]
+struct PromRecord {
+    label: String,
+    value: f64,
+    timestamp: i64,
+}
+
+fn parse_prom_line(line: &str) -> Option<PromRecord> {
+    // Ignore comments
+    if line.trim().starts_with('#') {
+        return None;
+    }
+
+    // Split the line into parts
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    // Parse the label, value, and timestamp
+    let label = parts[0].to_string();
+    let value: f64 = parts[1].parse().ok()?;
+    let timestamp: i64 = parts[2].parse().ok()?;
+    Some(PromRecord {
+        label,
+        value,
+        timestamp,
+    })
+}
+
+fn convert_prom_file(input: PathBuf, output: PathBuf) -> Result<()> {
+    let file = File::open(input)?;
+
+    let reader = BufReader::new(file);
+
+    let mut writer = BSONBlockWriter::new_file(&output, 10).unwrap();
+
+    let mut records: Vec<(String, f64)> = Vec::with_capacity(500);
+    let mut last_timestamp: i64 = 0;
+
+    for line in reader.lines() {
+        let line = line?;
+        if let Some(record) = parse_prom_line(&line) {
+            if last_timestamp == 0 {
+                last_timestamp = record.timestamp;
+                continue;
+            }
+
+            if last_timestamp != record.timestamp {
+                // flush
+                //
+
+                records.sort_by(|a, b| a.0.cmp(&b.0));
+
+                let samples: IndexMap<String, f64> = records.iter().cloned().collect();
+
+                let doc = bson::doc![
+                    "start" : last_timestamp,
+                   "serverStatus": to_document(&samples).expect("Expect conversion to bson for metrics never fails"),
+                   "end" : last_timestamp,
+                ];
+
+                // println!("{:#?}", doc);
+
+                writer.add_sample(&doc)?;
+
+                records.clear();
+                last_timestamp = record.timestamp;
+            } else {
+                records.push((record.label, record.value));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Cli::parse();
     // println!("{:?}", args);
@@ -476,7 +570,6 @@ fn main() -> Result<()> {
                 }
             };
         }
-
         Commands::Stats { input } => {
             let mut total = 0;
             let mut blocks = 0;
@@ -518,7 +611,6 @@ fn main() -> Result<()> {
                 blocks, metadata, reference_docs, metric_docs, total
             );
         }
-
         Commands::BlockStats { input } => {
             let rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
@@ -543,7 +635,6 @@ fn main() -> Result<()> {
                 }
             }
         }
-
         Commands::Timings { input } => {
             let mut deltas = HashMap::<String, Vec<i64>>::new();
 
@@ -583,6 +674,9 @@ fn main() -> Result<()> {
                     convert_flat_file(input, format, &mut stdout().lock())?;
                 }
             };
+        }
+        Commands::ConvertProm { input, output } => {
+            convert_prom_file(input, output)?;
         }
     }
 
