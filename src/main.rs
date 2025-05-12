@@ -124,6 +124,10 @@ enum Commands {
         /// Output file, stdout if not present
         #[arg(required = false, short, long)]
         output: Option<PathBuf>,
+
+        /// Sample records in a metric batch
+        #[arg(required = false, short, long)]
+        sample: Option<u16>,
     },
 
     /// Analyze timings of FTDC capture
@@ -317,11 +321,21 @@ const SENTINEL_VALUE: usize = 0xffffffff;
 //     input.chars().filter(|c| *c == ',').count()
 // }
 
+trait FlatOutputWriter {
+    fn write_header(&mut self, header_names: &Vec<String>) -> Result<()>;
+    fn write_row(
+        &mut self,
+        metrics: &Vec<u64>,
+        map_vec: &Vec<usize>,
+        start_time: u64,
+    ) -> Result<()>;
+}
+
 struct CSVWriter<'a> {
     buf_writer: BufWriter<&'a mut dyn Write>,
 }
 
-impl<'a> CSVWriter<'a> {
+impl<'a> FlatOutputWriter for CSVWriter<'a> {
     fn write_header(&mut self, header_names: &Vec<String>) -> Result<()> {
         let header_names_comma = header_names.join(",");
 
@@ -334,7 +348,12 @@ impl<'a> CSVWriter<'a> {
         Ok(())
     }
 
-    fn write_row(&mut self, metrics: &Vec<u64>, map_vec: &Vec<usize>) -> Result<()> {
+    fn write_row(
+        &mut self,
+        metrics: &Vec<u64>,
+        map_vec: &Vec<usize>,
+        _start_time: u64,
+    ) -> Result<()> {
         // let mut s = String::new();
         for (_, &mapping) in map_vec.iter().enumerate() {
             if mapping != SENTINEL_VALUE {
@@ -354,15 +373,66 @@ impl<'a> CSVWriter<'a> {
     }
 }
 
+struct PrometheusWriter<'a> {
+    buf_writer: BufWriter<&'a mut dyn Write>,
+    header_names: Option<Vec<String>>,
+}
+
+impl<'a> FlatOutputWriter for PrometheusWriter<'a> {
+    fn write_header(&mut self, header_names_ref: &Vec<String>) -> Result<()> {
+        let header_names: Vec<String> = header_names_ref
+            .iter()
+            .map(|x| x.replace(" ", "_"))
+            .collect();
+
+        for header in header_names.iter() {
+            self.buf_writer
+                .write(format!("# TYPE {} counter\n", header).as_bytes())?;
+        }
+
+        self.header_names = Some(header_names);
+
+        Ok(())
+    }
+
+    fn write_row(
+        &mut self,
+        metrics: &Vec<u64>,
+        map_vec: &Vec<usize>,
+        start_time: u64,
+    ) -> Result<()> {
+        let header_names = self.header_names.as_ref().unwrap();
+        for (header_index, &mapping) in map_vec.iter().enumerate() {
+            if mapping != SENTINEL_VALUE {
+                write!(
+                    self.buf_writer,
+                    "{} {} {}\n",
+                    header_names[header_index], metrics[mapping], start_time
+                )?;
+            }
+        }
+        write!(self.buf_writer, "\n")?;
+
+        Ok(())
+    }
+}
+
 fn convert_flat_file(
     input: PathBuf,
-    _format: FlatOutputFormat,
+    format: FlatOutputFormat,
+    sample: u16,
     writer: &mut dyn Write,
 ) -> Result<()> {
     let first_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
-    let mut csv_writer = CSVWriter {
-        buf_writer: BufWriter::new(writer),
+    let mut flat_writer: Box<dyn FlatOutputWriter> = match format {
+        FlatOutputFormat::CSV => Box::new(CSVWriter {
+            buf_writer: BufWriter::new(writer),
+        }),
+        FlatOutputFormat::Prometheus => Box::new(PrometheusWriter {
+            buf_writer: BufWriter::new(writer),
+            header_names: None,
+        }),
     };
 
     let mut scratch = Vec::<u8>::new();
@@ -425,14 +495,19 @@ fn convert_flat_file(
     header_names.push("ignore_trailer".into());
 
     // println!("Paths: {}", header_names.len());
+    let mut start_index = 0;
 
-    for hn in &header_names {
+    for (idx, hn) in header_names.iter().enumerate() {
         if hn.contains(",") {
             panic!("Header name has a comma which is not escaped {}", hn);
         }
+
+        if hn == ".start" {
+            start_index = idx;
+        }
     }
 
-    csv_writer.write_header(&header_names)?;
+    flat_writer.write_header(&header_names)?;
 
     let second_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
@@ -445,8 +520,9 @@ fn convert_flat_file(
                 let rdr = ftdc::VectorMetricsReader::new(&doc)?;
 
                 let mut col_list_map: Vec<usize> = vec![SENTINEL_VALUE; path_index.len()];
+                let mut start_time_idx = 0;
 
-                for m_item in rdr.into_iter() {
+                for (idx, m_item) in rdr.into_iter().enumerate() {
                     match m_item {
                         VectorMetricsDocument::Reference(d1) => {
                             let paths = extract_metrics_paths(&d1);
@@ -471,14 +547,26 @@ fn convert_flat_file(
                                 block_col_to_global_index.iter().enumerate()
                             {
                                 col_list_map[global_block_idx] = local_block_index;
+
+                                if global_block_idx == start_index {
+                                    start_time_idx = local_block_index
+                                }
                             }
 
                             let metrics = extract_metrics(&d1);
 
-                            csv_writer.write_row(&metrics, &col_list_map)?;
+                            let start_time = metrics[start_time_idx];
+
+                            flat_writer.write_row(&metrics, &col_list_map, start_time)?;
                         }
                         VectorMetricsDocument::Metrics(d1) => {
-                            csv_writer.write_row(&d1, &col_list_map)?;
+                            if idx.rem_euclid(sample as usize) != 0 {
+                                continue;
+                            }
+
+                            let start_time = d1[start_time_idx];
+
+                            flat_writer.write_row(&d1, &col_list_map, start_time)?;
                         }
                     };
                 }
@@ -679,13 +767,14 @@ fn main() -> Result<()> {
             input,
             format,
             output,
+            sample,
         } => {
             match output {
                 Some(f) => {
-                    convert_flat_file(input, format, &mut File::create(f)?)?;
+                    convert_flat_file(input, format, sample.unwrap_or(1), &mut File::create(f)?)?;
                 }
                 None => {
-                    convert_flat_file(input, format, &mut stdout().lock())?;
+                    convert_flat_file(input, format, sample.unwrap_or(1), &mut stdout().lock())?;
                 }
             };
         }

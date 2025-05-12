@@ -189,9 +189,9 @@ fn extract_metrics_paths_bson_int(
 
 fn extract_metrics_paths_int(doc: &Document, prefix: &str, metrics: &mut Vec<MetricTypeInfo>) {
     for item in doc {
-        if item.0 == "/boot/efi" {
-            println!("MCB")
-        }
+        // if item.0 == "/boot/efi" {
+        //     println!("MCB")
+        // }
         extract_metrics_paths_bson_int(&item, prefix, metrics);
     }
 }
