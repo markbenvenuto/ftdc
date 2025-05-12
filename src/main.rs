@@ -80,7 +80,8 @@ enum OutputFormat {
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
 enum FlatOutputFormat {
     CSV,
-    Parquet,
+    // Parquet,
+    Prometheus,
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,7 +106,7 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Decompress FTDC to CSV or Parquet
+    /// Decompress FTDC to CSV, Parquet or Promethesus
     #[command(arg_required_else_help = true)]
     ConvertFlat {
         /// Input file
@@ -316,23 +317,41 @@ const SENTINEL_VALUE: usize = 0xffffffff;
 //     input.chars().filter(|c| *c == ',').count()
 // }
 
-fn write_row(metrics: &Vec<u64>, map_vec: &Vec<usize>, writer: &mut dyn Write) -> Result<()> {
-    // let mut s = String::new();
-    for (_, &mapping) in map_vec.iter().enumerate() {
-        if mapping != SENTINEL_VALUE {
-            write!(writer, "{},", metrics[mapping])?;
-            // s.push_str(&format!("{},", metrics[mapping] ));
-        } else {
-            writer.write("0,".as_bytes())?;
-            // s.push_str("0,");
-        }
+struct CSVWriter<'a> {
+    buf_writer: BufWriter<&'a mut dyn Write>,
+}
+
+impl<'a> CSVWriter<'a> {
+    fn write_header(&mut self, header_names: &Vec<String>) -> Result<()> {
+        let header_names_comma = header_names.join(",");
+
+        // println!("Commas {}", count_commas(&header_names_comma));
+
+        // Make csv header
+        self.buf_writer.write(header_names_comma.as_bytes())?;
+        self.buf_writer.write("\n".as_bytes())?;
+
+        Ok(())
     }
 
-    // println!("Commas2 {}", count_commas(&s));
+    fn write_row(&mut self, metrics: &Vec<u64>, map_vec: &Vec<usize>) -> Result<()> {
+        // let mut s = String::new();
+        for (_, &mapping) in map_vec.iter().enumerate() {
+            if mapping != SENTINEL_VALUE {
+                write!(self.buf_writer, "{},", metrics[mapping])?;
+                // s.push_str(&format!("{},", metrics[mapping] ));
+            } else {
+                self.buf_writer.write("0,".as_bytes())?;
+                // s.push_str("0,");
+            }
+        }
 
-    writer.write("0\n".as_bytes())?;
+        // println!("Commas2 {}", count_commas(&s));
 
-    Ok(())
+        self.buf_writer.write("0\n".as_bytes())?;
+
+        Ok(())
+    }
 }
 
 fn convert_flat_file(
@@ -342,7 +361,9 @@ fn convert_flat_file(
 ) -> Result<()> {
     let first_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
-    let mut buf_writer = BufWriter::new(writer);
+    let mut csv_writer = CSVWriter {
+        buf_writer: BufWriter::new(writer),
+    };
 
     let mut scratch = Vec::<u8>::new();
     scratch.reserve(1024 * 1024);
@@ -379,7 +400,7 @@ fn convert_flat_file(
                             break;
                         }
                         VectorMetricsDocument::Metrics(_) => {
-                            panic!("Should not hit this");
+                            panic!("Should not hit this since we break early");
                         }
                     };
                 }
@@ -411,13 +432,7 @@ fn convert_flat_file(
         }
     }
 
-    let header_names_comma = header_names.join(",");
-
-    // println!("Commas {}", count_commas(&header_names_comma));
-
-    // Make csv header
-    buf_writer.write(header_names_comma.as_bytes())?;
-    buf_writer.write("\n".as_bytes())?;
+    csv_writer.write_header(&header_names)?;
 
     let second_rdr = ftdc::BSONBlockReader::new(input.to_str().unwrap()).unwrap();
 
@@ -436,7 +451,7 @@ fn convert_flat_file(
                         VectorMetricsDocument::Reference(d1) => {
                             let paths = extract_metrics_paths(&d1);
 
-                            println!("Paths: {}", paths.len());
+                            // println!("Paths: {}", paths.len());
                             // list of col names
                             let block_cols: Vec<String> =
                                 paths.into_iter().map(|x| x.name.replace(",", "")).collect();
@@ -460,10 +475,10 @@ fn convert_flat_file(
 
                             let metrics = extract_metrics(&d1);
 
-                            write_row(&metrics, &col_list_map, &mut buf_writer)?;
+                            csv_writer.write_row(&metrics, &col_list_map)?;
                         }
                         VectorMetricsDocument::Metrics(d1) => {
-                            write_row(&d1, &col_list_map, &mut buf_writer)?;
+                            csv_writer.write_row(&d1, &col_list_map)?;
                         }
                     };
                 }
