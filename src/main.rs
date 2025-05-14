@@ -23,14 +23,14 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use bson::to_document;
+use bson::RawDocument;
 use chrono::TimeZone;
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use anyhow::Result;
-use bson::Document;
-use ftdc::extract_metrics;
-use ftdc::extract_metrics_paths;
+use ftdc::util::extract_metrics_paths_raw;
+use ftdc::util::extract_metrics_raw;
 use ftdc::writer::BSONBlockWriter;
 use ftdc::MetricsDocument;
 use ftdc::VectorMetricsDocument;
@@ -199,7 +199,7 @@ enum Commands {
 //     return v;
 // }
 
-fn analyze_ref(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result<()> {
+fn analyze_ref(doc: &RawDocument, deltas: &mut HashMap<String, Vec<i64>>) -> Result<()> {
     // println!("Start : {:?}", doc.get("start"));
     // println!("End : {:?}", doc.get("end"));
     let delta =
@@ -212,7 +212,10 @@ fn analyze_ref(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result
     deltas.get_mut("base").unwrap().push(delta);
     // v.insert("base".to_owned(), delta);
 
-    for key in doc.keys() {
+    for element_ret in doc.iter_elements() {
+        let element = element_ret.expect("analyze correct bson document");
+
+        let key = element.key();
         if key == "start" || key == "end" {
             continue;
         }
@@ -240,7 +243,7 @@ fn analyze_ref(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result
     Ok(())
 }
 
-fn analyze_doc(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result<()> {
+fn analyze_doc(doc: &RawDocument, deltas: &mut HashMap<String, Vec<i64>>) -> Result<()> {
     // println!("Start : {:?}", doc.get("start"));
     // println!("End : {:?}", doc.get("end"));
     let delta =
@@ -251,7 +254,10 @@ fn analyze_doc(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result
     deltas.get_mut("base").unwrap().push(delta);
     // v.insert("base".to_owned(), delta);
 
-    for key in doc.keys() {
+    for element_ret in doc.iter_elements() {
+        let element = element_ret.expect("analyze correct bson document");
+
+        let key = element.key();
         if key == "start" || key == "end" {
             continue;
         }
@@ -267,11 +273,10 @@ fn analyze_doc(doc: &Document, deltas: &mut HashMap<String, Vec<i64>>) -> Result
     Ok(())
 }
 
-fn format_doc(format: OutputFormat, doc: &Document, writer: &mut dyn Write) -> Result<()> {
+fn format_doc(format: OutputFormat, doc: &RawDocument, writer: &mut dyn Write) -> Result<()> {
     match format {
         OutputFormat::Bson => {
-            let res = bson::to_vec(&doc)?;
-            writer.write_all(&res)?;
+            writer.write_all(doc.as_bytes())?;
         }
         OutputFormat::Json => {
             serde_json::to_writer(writer, &doc)?;
@@ -451,7 +456,7 @@ fn convert_flat_file(
                 for m_item in rdr.into_iter() {
                     match m_item {
                         VectorMetricsDocument::Reference(d1) => {
-                            let paths = extract_metrics_paths(&d1);
+                            let paths = extract_metrics_paths_raw(&d1);
 
                             let mut dups: BTreeSet<String> = BTreeSet::new();
 
@@ -525,7 +530,7 @@ fn convert_flat_file(
                 for (idx, m_item) in rdr.into_iter().enumerate() {
                     match m_item {
                         VectorMetricsDocument::Reference(d1) => {
-                            let paths = extract_metrics_paths(&d1);
+                            let paths = extract_metrics_paths_raw(&d1);
 
                             // println!("Paths: {}", paths.len());
                             // list of col names
@@ -553,7 +558,7 @@ fn convert_flat_file(
                                 }
                             }
 
-                            let metrics = extract_metrics(&d1);
+                            let metrics = extract_metrics_raw(&d1);
 
                             let start_time = metrics[start_time_idx];
 

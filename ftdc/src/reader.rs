@@ -3,20 +3,22 @@ use std::io::BufReader;
 use std::io::Read;
 
 use anyhow::Result;
-use bson::Document;
+use bson::spec::BinarySubtype;
+use bson::RawDocument;
+use bson::RawDocumentBuf;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use libflate::zlib::Decoder;
 use std::io::Cursor;
 use std::rc::Rc;
 
-use crate::util::extract_metrics;
-use crate::util::extract_metrics_paths;
-use crate::util::fill_document;
+use crate::util::extract_metrics_paths_raw;
+use crate::util::extract_metrics_raw;
+use crate::util::fill_document_raw;
 
 #[derive(Debug)]
 pub enum MetricsDocument {
-    Reference(Rc<Document>),
-    Metrics(Document),
+    Reference(Rc<RawDocumentBuf>),
+    Metrics(RawDocumentBuf),
 }
 
 enum MetricState {
@@ -29,8 +31,8 @@ pub struct BSONBlockReader<R: Read> {
 }
 
 pub enum RawBSONBlock {
-    Metadata(Document),
-    Metrics(Document),
+    Metadata(RawDocumentBuf),
+    Metrics(RawDocumentBuf),
 }
 
 impl BSONBlockReader<File> {
@@ -95,7 +97,7 @@ impl<R: Read> Iterator for BSONBlockReader<R> {
         // println!("size3 {}", v.len());
         // println!("Pos: {}\n", self.reader.stream_position().unwrap());
 
-        let doc: Document = bson::from_reader(&mut Cursor::new(&v)).unwrap();
+        let doc = RawDocumentBuf::from_bytes(v).unwrap();
 
         let ftdc_type = doc.get_i32("type").unwrap();
 
@@ -113,12 +115,12 @@ impl<R: Read> Iterator for BSONBlockReader<R> {
 // TODO - use lifetime to avoid copy of vec
 #[derive(Debug)]
 pub enum VectorMetricsDocument {
-    Reference(Rc<Document>),
+    Reference(Rc<RawDocumentBuf>),
     Metrics(Vec<u64>),
 }
 
 pub struct DecodedMetricBlock {
-    pub ref_doc: Rc<Document>,
+    pub ref_doc: Rc<RawDocumentBuf>,
     pub ref_doc_size_bytes: usize,
 
     pub chunk_size_bytes: usize,
@@ -128,26 +130,30 @@ pub struct DecodedMetricBlock {
     pub(crate) raw_metrics: Vec<u64>,
 }
 
-pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> {
-    let blob = doc.get_binary_generic("data")?;
-    let chunk_size_bytes = blob.len();
+pub fn decode_metric_block<'a>(doc: &'a RawDocument) -> Result<DecodedMetricBlock> {
+    let blob = doc.get_binary("data")?;
+    assert_eq!(blob.subtype, BinarySubtype::Generic);
+    let chunk_size_bytes = blob.bytes.len();
 
-    let mut size_rdr = Cursor::new(&blob);
+    let mut size_rdr = Cursor::new(&blob.bytes);
     let _un_size = size_rdr.read_i32::<LittleEndian>()?;
     // println!("Uncompressed size {}", un_size);
 
     // skip the length in the compressed blob
     let mut decoded_data = Vec::<u8>::new();
-    let mut decoder = Decoder::new(&blob[4..])?;
+    let mut decoder = Decoder::new(&blob.bytes[4..])?;
     decoder.read_to_end(&mut decoded_data)?;
 
     let mut cur = Cursor::new(&decoded_data);
 
     let ref_doc_size_bytes = cur.read_i32::<LittleEndian>()? as usize;
-    cur.set_position(0);
 
-    let ref_doc = Rc::new(bson::from_reader(&mut cur)?);
+    // RawDocument::from_bytes expects the slice to be the length of the bson document
+    let ref_doc_slice: &[u8] = &decoded_data[0..ref_doc_size_bytes];
+    let ref_doc = Rc::new(RawDocument::from_bytes(&ref_doc_slice)?.to_raw_document_buf());
 
+    // Advance the cursor past the reference document
+    cur.set_position(ref_doc_size_bytes as u64);
     // let mut pos1: usize = cur.position() as usize;
     // println!("pos:{:?}", pos1);
 
@@ -158,9 +164,9 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
     // println!("sample_count {}", sample_count);
 
     // Extract metrics from reference document
-    let ref_metrics = extract_metrics(&ref_doc);
+    let ref_metrics = extract_metrics_raw(&ref_doc);
     if ref_metrics.len() != metrics_count as usize {
-        let paths = extract_metrics_paths(&ref_doc);
+        let paths = extract_metrics_paths_raw(&ref_doc);
         for p in paths {
             println!("{}", p.name);
         }
@@ -246,7 +252,7 @@ pub fn decode_metric_block<'a>(doc: &'a Document) -> Result<DecodedMetricBlock> 
 
 // TODO - make this a wrapper around VectorMetricsReader
 pub struct MetricsReader<'a> {
-    _doc: &'a Document,
+    _doc: &'a RawDocument,
     pub decoded_block: DecodedMetricBlock,
 
     it_state: MetricState,
@@ -255,7 +261,7 @@ pub struct MetricsReader<'a> {
 }
 
 impl<'a> MetricsReader<'a> {
-    pub fn new<'b>(doc: &'b Document) -> Result<MetricsReader<'b>> {
+    pub fn new<'b>(doc: &'b RawDocument) -> Result<MetricsReader<'b>> {
         let db = decode_metric_block(doc)?;
         let s = vec![0; db.metrics_count as usize];
 
@@ -300,7 +306,7 @@ impl<'a> Iterator for MetricsReader<'a> {
                         [get_array_offset(self.decoded_block.sample_count, self.sample - 1, i)];
                 }
 
-                let d = fill_document(&self.decoded_block.ref_doc, &self.scratch);
+                let d = fill_document_raw(&self.decoded_block.ref_doc, &self.scratch);
                 Some(MetricsDocument::Metrics(d))
             }
         }
@@ -308,7 +314,7 @@ impl<'a> Iterator for MetricsReader<'a> {
 }
 
 pub struct VectorMetricsReader<'a> {
-    _doc: &'a Document,
+    _doc: &'a RawDocument,
     pub decoded_block: DecodedMetricBlock,
 
     it_state: MetricState,
@@ -317,7 +323,7 @@ pub struct VectorMetricsReader<'a> {
 }
 
 impl<'a> VectorMetricsReader<'a> {
-    pub fn new<'b>(doc: &'b Document) -> Result<VectorMetricsReader<'b>> {
+    pub fn new<'b>(doc: &'b RawDocument) -> Result<VectorMetricsReader<'b>> {
         let db = decode_metric_block(doc)?;
         let s = vec![0; db.metrics_count as usize];
 

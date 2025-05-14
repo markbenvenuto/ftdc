@@ -63,8 +63,8 @@ mod test {
     use super::reader::decode_metric_block;
     use super::writer::{AddResult, BSONBlockWriter, BSONMetricsCompressor};
     use assert_ok::assert_ok;
-    use bson::doc;
     use bson::spec::BinarySubtype;
+    use bson::{doc, RawDocumentBuf};
     use bytes::BufMut;
     use chrono::{TimeZone, Utc};
 
@@ -104,7 +104,7 @@ mod test {
                 assert!(false);
             }
             AddResult::NewBlock(met_opt) => {
-                let (met, date) = met_opt.unwrap();
+                let (met, _date) = met_opt.unwrap();
 
                 /*
                 let mut rdr = BSONBlockReader::new_reader(Cursor::new(met)).unwrap();
@@ -115,7 +115,8 @@ mod test {
 
                 let d1 =
                     doc! { "data" : bson::Binary{subtype: BinarySubtype::Generic, bytes: met} };
-                let dmbr = decode_metric_block(&d1);
+                let raw_doc = RawDocumentBuf::from_document(&d1).unwrap();
+                let dmbr = decode_metric_block(&raw_doc.as_ref());
                 assert!(dmbr.is_ok());
                 let dmb = dmbr.unwrap();
                 assert_eq!(dmb.sample_count, 2);
